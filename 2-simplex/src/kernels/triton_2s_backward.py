@@ -307,7 +307,7 @@ def backward(grad_output, tri_feats, edge_index, Q, K, V, Kp, Vp, out_dim, num_h
     O_r = O_r.view(1, N, D, H)
     M_r = M_r.view(1, H, N)
 
-    D = torch.sum(dO_r * O_r, dim=2) # [1, H, N]
+    D_row = torch.sum(dO_r * O_r, dim=2).contiguous()  # [1, H, N] — rowsum(dO * O)
 
     dQ = torch.zeros_like(Q_r)
     dK1 = torch.zeros_like(K_r)
@@ -325,19 +325,19 @@ def backward(grad_output, tri_feats, edge_index, Q, K, V, Kp, Vp, out_dim, num_h
         "v2_stride_b": Vp_r.stride(0), "v2_stride_s": Vp_r.stride(1), "v2_stride_k": Vp_r.stride(2), "v2_stride_h": Vp_r.stride(3),
         "dO_stride_b": dO_r.stride(0), "dO_stride_s": dO_r.stride(1), "dO_stride_k": dO_r.stride(2), "dO_stride_h": dO_r.stride(3),
         "m_stride_b": 0, "m_stride_k": M_r.stride(1), "m_stride_s": M_r.stride(2),
-        "d_stride_b": 0, "d_stride_k": D.stride(1), "d_stride_s": D.stride(2),
+        "d_stride_b": 0, "d_stride_k": D_row.stride(1), "d_stride_s": D_row.stride(2),
         "dq_stride_b": dQ.stride(0), "dq_stride_s": dQ.stride(1), "dq_stride_k": dQ.stride(2), "dq_stride_h": dQ.stride(3),
         "dk1_stride_b": dK1.stride(0), "dk1_stride_s": dK1.stride(1), "dk1_stride_k": dK1.stride(2), "dk1_stride_h": dK1.stride(3),
         "dv1_stride_b": dV1.stride(0), "dv1_stride_s": dV1.stride(1), "dv1_stride_k": dV1.stride(2), "dv1_stride_h": dV1.stride(3),
     }
 
     two_simplicial_attn_bwd_kv1_kernel[grid_kv1](
-        Q_r, K_r, Kp_r, V_r, Vp_r, dO_r, M_r, D,
+        Q_r, K_r, Kp_r, V_r, Vp_r, dO_r, M_r, D_row,
         dQ, dK1, dV1,
-        1, N, H, D,
+        1, N, H, head_dim,
         w1, w2,
         **strides,
-        BLOCK_SIZE_Q=32, BLOCK_SIZE_KV=32, HEAD_DIM=D, SM_SCALE=1.0/(D**0.5),
+        BLOCK_SIZE_Q=32, BLOCK_SIZE_KV=32, HEAD_DIM=head_dim, SM_SCALE=1.0 / (head_dim ** 0.5),
         K2_BIAS=0.0, V2_BIAS=0.0, COMPUTE_DQ=True, num_stages=1, is_flipped=False
     )
 
@@ -348,20 +348,20 @@ def backward(grad_output, tri_feats, edge_index, Q, K, V, Kp, Vp, out_dim, num_h
     strides_kv2["dv2_stride_b"] = dV2.stride(0); strides_kv2["dv2_stride_s"] = dV2.stride(1); strides_kv2["dv2_stride_k"] = dV2.stride(2); strides_kv2["dv2_stride_h"] = dV2.stride(3)
 
     two_simplicial_attn_bwd_kv2q_kernel[grid_kv2q](
-        Q_r, K_r, Kp_r, V_r, Vp_r, dO_r, M_r, D,
+        Q_r, K_r, Kp_r, V_r, Vp_r, dO_r, M_r, D_row,
         dQ, dK2, dV2,
-        1, N, H, D,
+        1, N, H, head_dim,
         w1, w2,
         **strides_kv2,
-        HEAD_DIM=D, SM_SCALE=1.0/(D**0.5), K2_BIAS=0.0, V2_BIAS=0.0, num_stages=1, IS_SECOND_PASS=False
+        HEAD_DIM=head_dim, SM_SCALE=1.0 / (head_dim ** 0.5), K2_BIAS=0.0, V2_BIAS=0.0, num_stages=1, IS_SECOND_PASS=False
     )
     two_simplicial_attn_bwd_kv2q_kernel[grid_kv2q](
-        Q_r, K_r, Kp_r, V_r, Vp_r, dO_r, M_r, D,
+        Q_r, K_r, Kp_r, V_r, Vp_r, dO_r, M_r, D_row,
         dQ, dK2, dV2,
-        1, N, H, D,
+        1, N, H, head_dim,
         w1, w2,
         **strides_kv2,
-        HEAD_DIM=D, SM_SCALE=1.0/(D**0.5), K2_BIAS=0.0, V2_BIAS=0.0, num_stages=1, IS_SECOND_PASS=True
+        HEAD_DIM=head_dim, SM_SCALE=1.0 / (head_dim ** 0.5), K2_BIAS=0.0, V2_BIAS=0.0, num_stages=1, IS_SECOND_PASS=True
     )
 
-    return dQ.view(N, H, D), dK1.view(N, H, D), dV1.view(N, H, D), dK2.view(N, H, D), dV2.view(N, H, D)
+    return dQ.view(N, H, head_dim), dK1.view(N, H, head_dim), dV1.view(N, H, head_dim), dK2.view(N, H, head_dim), dV2.view(N, H, head_dim)
