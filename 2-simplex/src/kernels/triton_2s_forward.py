@@ -172,7 +172,6 @@ if _check_triton():
                 INPUT_PRECISION="tf32",
                 SM_SCALE=1.0 / (head_dim ** 0.5),
                 K2_BIAS=0.0, V2_BIAS=0.0,
-                num_stages=1,
             )
         else:
             # Called from forward() with a dictionary of strides
