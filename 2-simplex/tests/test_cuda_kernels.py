@@ -18,19 +18,24 @@ pytestmark = pytest.mark.skipif(
 
 def _pytorch_local_window_ref(Q, K1, K2, V1, V2, w1, w2, sm_scale):
     """PyTorch reference for local-window 2-simplicial attention.
+    Uses strict bounds: i-w1 < j <= i and i-w2 < k <= i (matching the kernel mask).
     Q, K1, K2, V1, V2: [B, S, H, D]
     Returns O: [B, S, H, D]
     """
     B, S, H, D = Q.shape
-    O = torch.zeros_like(Q, dtype=torch.float32)
+    O = torch.zeros(B, S, H, D, dtype=torch.float32, device=Q.device)
     for b in range(B):
         for h in range(H):
             for i in range(S):
                 q_i = Q[b, i, h].float()
-                scores, vs = [], []
+                scores = []
                 max_s = float("-inf")
-                for j in range(max(0, i - w1), i + 1):
-                    for k in range(max(0, i - w2), i + 1):
+                for j in range(S):
+                    if not (i - w1 < j <= i):
+                        continue
+                    for k in range(S):
+                        if not (i - w2 < k <= i):
+                            continue
                         s = torch.dot(q_i, K1[b, j, h].float() * K2[b, k, h].float()) * sm_scale
                         scores.append((s, j, k))
                         max_s = max(max_s, s.item())
@@ -42,7 +47,8 @@ def _pytorch_local_window_ref(Q, K1, K2, V1, V2, w1, w2, sm_scale):
                     e = torch.exp(s - max_s)
                     denom += e.item()
                     out += e * (V1[b, j, h].float() * V2[b, k, h].float())
-                O[b, i, h] = out / denom
+                if denom > 0:
+                    O[b, i, h] = out / denom
     return O
 
 
