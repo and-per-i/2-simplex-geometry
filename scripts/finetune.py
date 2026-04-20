@@ -19,7 +19,7 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, default="./alphageometry-edge-finetuned", help="Output directory")
     parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate (should be very low)")
     parser.add_argument("--epochs", type=int, default=2, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=2, help="Batch size per device")
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size per device (multiplied by 4 internally)")
     parser.add_argument("--grad_acc", type=int, default=8, help="Gradient accumulation steps")
     return parser.parse_args()
 
@@ -138,10 +138,10 @@ def main():
         save_strategy="steps",
         save_steps=1000,             # Save every 1000 steps
         save_total_limit=3,          # Keep only last 3 checkpoints to save space
-        logging_steps=1,             # More frequent logging
+        logging_steps=10,            # Standard logging
         report_to="none",
         push_to_hub=False,
-        gradient_checkpointing=True, # Extra safety for memory
+        gradient_checkpointing=False, # Disabled for speed (32GB VRAM is enough)
         optim="adamw_torch_fused",   # Faster optimizer
         remove_unused_columns=False, # Important for custom data
     )
