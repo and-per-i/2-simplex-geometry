@@ -76,9 +76,22 @@ def run_curriculum():
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = 0
 
-    # Modello di partenza (l'ultimo checkpoint stabile di Phase 2)
-    current_model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../checkpoints/checkpoint-96000"))
-    
+    # --- 3. Custom Data Collator per il Padding Dinamico ---
+    def custom_collator(features):
+        batch = {}
+        max_len = max(len(f["input_ids"]) for f in features)
+        
+        for key in ["input_ids", "attention_mask", "labels"]:
+            padded_seqs = []
+            for f in features:
+                seq = f[key]
+                # 0 per padding, -100 per labels (così la CrossEntropy li ignora)
+                pad_val = 0 if key != "labels" else -100
+                padded = seq + [pad_val] * (max_len - len(seq))
+                padded_seqs.append(padded)
+            batch[key] = torch.tensor(padded_seqs, dtype=torch.long)
+        return batch
+
     for stage in CURRICULUM:
         level = stage["level"]
         dataset_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", stage["path"]))
@@ -138,6 +151,7 @@ def run_curriculum():
                 model=model,
                 args=training_args,
                 train_dataset=train_dataset,
+                data_collator=custom_collator,
                 callbacks=[plateau_callback]
             )
 
