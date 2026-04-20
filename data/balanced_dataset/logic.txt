@@ -1,0 +1,17 @@
+LOGICA DATASET BILANCIATO (70/30)
+================================
+
+Totale campioni: 2000000
+Composizione Target: 70% Facili/Medi, 30% Difficili
+
+CRITERI:
+- FACILI/MEDI (70%): Problemi con < 15 step logici.
+  Include la gamma completa dai problemi banali a quelli di media complessità.
+
+- DIFFICILI (30%): Problemi con 15-25 step logici.
+  Selezionati per essere sfidanti ma senza raggiungere lunghezze estreme (>30-50 step),
+  evitando quelli che potrebbero risultare 'impossibili' per le fasi iniziali.
+
+NOTE:
+Questo dataset è progettato per un addestramento bilanciato che predilige la stabilità (70%)
+senza rinunciare a una significativa componente di complessità (30%).

@@ -75,3 +75,6 @@ dmypy.json
 
 # Pyright
 .pyright_cache/
+
+# Local checkpoints
+checkpoints_finetuned/

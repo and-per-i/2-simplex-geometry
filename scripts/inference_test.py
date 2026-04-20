@@ -30,12 +30,13 @@ def run_pro_inference(prompt, model_path, tokenizer_path):
     print(f"\nPROMPT: {prompt}")
     inputs = {k: v.to(device) for k, v in tokenizer(prompt, return_tensors="pt").items()}
 
-    print("Generating proof (Greedy Search)...")
+    print("Generating proof (Beam Search, beams=5)...")
     with torch.no_grad():
         output_tokens = model.generate(
             **inputs, 
             max_new_tokens=512,
-            do_sample=False,
+            num_beams=5,
+            early_stopping=True,
             repetition_penalty=1.2,
             no_repeat_ngram_size=3,
             pad_token_id=tokenizer.pad_token_id,

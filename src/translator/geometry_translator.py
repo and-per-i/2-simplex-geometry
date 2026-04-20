@@ -81,7 +81,13 @@ class GeometryTranslator:
         "midpoint": "Midpoint",
         "intersection": "Intersection",
         "circle": "Circle",
-        "cyclic": "Cyclic"
+        "cyclic": "Cyclic",
+        "midp": "Midpoint",
+        "peq": "≅",
+        "pem": "⟂",
+        "ratio": "Ratio",
+        "prop": "Proposition",
+        "coll": "Collinear"
     }
 
     def __init__(self):
@@ -157,22 +163,30 @@ class GeometryTranslator:
         # Tokenize (updated to handle more patterns)
         raw_tokens = re.findall(r'r[0-9]+|[a-z]+|[0-9]+|;|:|\?|=', clean_solution)
         
-        translated_parts = []
-        step_count = 1
-        
+        translated_tokens = []
         for t in raw_tokens:
             translated = self.translate_token(t)
-            if not translated:
-                continue
+            if translated:
+                translated_tokens.append(translated)
+        
+        final_parts = []
+        step_count = 1
+        
+        # Keywords that should trigger a new step if they appear
+        step_triggers = ["⟂", "∥", "≅", "Collinear", "Midpoint", "Circle", "Cyclic", "Intersection"]
+        
+        for i, t in enumerate(translated_tokens):
+            # Check if this token should start a new step
+            # New step if it's a rule [Rule] or a major symbol/keyword
+            is_trigger = ("[" in t and "]" in t) or (t in step_triggers)
             
-            # Start new step on rules
-            if "[" in translated and "]" in translated:
-                translated_parts.append(f"\nSTEP {step_count:02d}: Using {translated} on")
+            if is_trigger and i > 0:
+                final_parts.append(f"\nSTEP {step_count:02d}: {t}")
                 step_count += 1
             else:
-                translated_parts.append(translated)
+                final_parts.append(t)
         
-        final_proof = " ".join(translated_parts).replace(" ;", ";").replace(" :", ":").replace(" ?", "?")
+        final_proof = " ".join(final_parts).replace(" ;", ";").replace(" :", ":").replace(" ?", "?")
         return final_proof.strip()
 
 if __name__ == "__main__":
