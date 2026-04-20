@@ -40,14 +40,14 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 
-# Data
-data/
+# Data (handled by LFS)
+# data/
 
-# Checkpoints
-checkpoints/
-*.pt
-*.pth
-*.ckpt
+# Checkpoints (handled by LFS)
+# checkpoints/
+# *.pt
+# *.pth
+# *.ckpt
 
 # Logs
 *.log
