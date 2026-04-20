@@ -17,9 +17,9 @@ def parse_args():
     parser.add_argument("--model_path", type=str, required=True, help="Path to the checkpoint from Phase 2")
     parser.add_argument("--dataset_path", type=str, default="data/hard_dataset/olympiad_problems.txt", help="Path to the hard dataset")
     parser.add_argument("--output_dir", type=str, default="./alphageometry-edge-finetuned", help="Output directory")
-    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate (should be very low)")
+    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate (optimized for large batches)")
     parser.add_argument("--epochs", type=int, default=2, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=8, help="Batch size per device (multiplied by 4 internally)")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size per device (multiplied by 4 internally)")
     parser.add_argument("--grad_acc", type=int, default=8, help="Gradient accumulation steps")
     return parser.parse_args()
 
