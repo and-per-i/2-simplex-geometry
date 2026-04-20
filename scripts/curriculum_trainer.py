@@ -62,7 +62,9 @@ class PlateauHandlerCallback(TrainerCallback):
 CURRICULUM = [
     {"level": "very_easy", "path": "data/very_easy/very_easy_500k.parquet"},
     {"level": "easy",      "path": "data/easy/easy_medium_500k.parquet"},
-    {"level": "difficult", "path": "data/difficult/balanced_dataset_part_1.parquet"}
+    {"level": "mixed",     "path": "data/mixed/curriculum_2M.parquet"},
+    {"level": "difficult", "path": "data/difficult/balanced_dataset_part_1.parquet"},
+    {"level": "difficult_p2", "path": "data/difficult/balanced_dataset_part_2.parquet"}
 ]
 
 def run_curriculum():
