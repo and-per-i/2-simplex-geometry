@@ -59,8 +59,18 @@ def run_pro_inference(prompt, model_path, tokenizer_path):
     print("==================================================\n")
 
 if __name__ == "__main__":
-    # Update these paths to match your project structure
-    MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../checkpoints/checkpoint-56000"))
+    # Automatic detection of the latest fine-tuned checkpoint
+    base_finetuned_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../checkpoints_finetuned"))
+    MODEL_DIR = os.path.join(base_finetuned_dir, "checkpoint-final")
+    
+    if not os.path.exists(MODEL_DIR):
+        # Look for the folder with the highest number if checkpoint-final is not found
+        subdirs = [d for d in os.listdir(base_finetuned_dir) if d.startswith("checkpoint-")]
+        if subdirs:
+            latest = sorted(subdirs, key=lambda x: int(x.split("-")[1]))[-1]
+            MODEL_DIR = os.path.join(base_finetuned_dir, latest)
+            print(f"🔍 Auto-detected latest checkpoint: {latest}")
+    
     TOKENIZER_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "../tokenizer/weights/geometry.757.model"))
 
     theorems = [

@@ -83,45 +83,58 @@ class TwoSimplicialAttention(nn.Module):
         return out
 
     def _forward_pytorch(self, N, Q, K, V, Kp, Vp):
-        """Standard PyTorch implementation with Sliding Window (slow loop)."""
-        Z_rows = []
-        for i in range(N):
-            # Sliding window indices for j and k
-            # j in [i-w1+1, i], k in [i-w2+1, i] (or [i-w1, i] etc. depending on definition)
-            # The Triton kernel uses (q_idx - w1) < kv_idx <= q_idx
-            # So indices are [i-w1+1, i]
-            
-            j_start = max(0, i - self.w1 + 1)
-            k_start = max(0, i - self.w2 + 1)
-            
-            neigh_j = torch.arange(j_start, i + 1, device=Q.device)
-            neigh_k = torch.arange(k_start, i + 1, device=Q.device)
-            
-            K_j = K[neigh_j]    # (d1, H, D)
-            V_j = V[neigh_j]
-            Kp_k = Kp[neigh_k]
-            Vp_k = Vp[neigh_k]
+        """Vectorized PyTorch implementation with Sliding Window (No loops)."""
+        device = Q.device
+        dtype = Q.dtype
+        H, D = self.num_heads, self.head_dim
 
-            q_i = Q[i]  # (H, D)
-            head_outs = []
-            for h in range(self.num_heads):
-                qi = q_i[h]  # (D,)
-                kj = K_j[:, h, :]   # (d1, D)
-                kkp = Kp_k[:, h, :] # (d2, D)
-                vj = V_j[:, h, :]   # (d1, D)
-                vkp = Vp_k[:, h, :] # (d2, D)
+        # 1. Create sliding window views for K and Kp
+        # We want tensors of shape (N, W, H, D) where W is the window size.
+        # We pad the sequences at the beginning to handle the first tokens.
+        def get_windows(tensor, window_size):
+            # Pad with zeros at the start: (window_size-1, H, D)
+            padded = torch.cat([torch.zeros(window_size - 1, H, D, device=device, dtype=dtype), tensor], dim=0)
+            # Use unfold to get sliding windows: (N, window_size, H, D)
+            return padded.unfold(0, window_size, 1).permute(0, 3, 1, 2)
 
-                # A_ijk = (qi * kj * kkp) / sqrt(d)
-                # This is (d1, d2)
-                A_ijk = torch.einsum('d,jd,kd->jk', qi, kj, kkp) / (self.head_dim ** 0.5)
+        K_win = get_windows(K, self.w1)   # (N, w1, H, D)
+        Kp_win = get_windows(Kp, self.w2) # (N, w2, H, D)
+        V_win = get_windows(V, self.w1)   # (N, w1, H, D)
+        Vp_win = get_windows(Vp, self.w2) # (N, w2, H, D)
 
-                S_flat = F.softmax(A_ijk.reshape(-1), dim=0)
-                S = self.drop(S_flat.view(len(neigh_j), len(neigh_k)))
+        # 2. Compute attention scores A_ijk = (qi * kj * kkp) / sqrt(d)
+        # Q: (N, H, D) -> (N, 1, 1, H, D)
+        # K_win: (N, w1, H, D) -> (N, w1, 1, H, D)
+        # Kp_win: (N, w2, H, D) -> (N, 1, w2, H, D)
+        
+        # Optimized einsum: (N, H, w1, w2)
+        # A_ijk[n, h, j, k] = sum_d Q[n, h, d] * K_win[n, j, h, d] * Kp_win[n, k, h, d]
+        A = torch.einsum('nhd,njhd,nkhd->nhjk', Q, K_win, Kp_win) / (D ** 0.5)
 
-                # head_out = sum_{j,k} S_ijk (vj * vkp)
-                head_outs.append(torch.einsum('jk,jd,kd->d', S, vj, vkp))
-            Z_rows.append(torch.stack(head_outs))
+        # 3. Masking: indices in the window that are actually padding (before the sequence start)
+        # For each i, the window covers [i-w+1, i]. If i-w+1 < 0, some elements are padding.
+        # We create a mask of shape (N, w1, w2)
+        m1 = torch.arange(self.w1, device=device).unsqueeze(0) # (1, w1)
+        m2 = torch.arange(self.w2, device=device).unsqueeze(0) # (1, w2)
+        
+        # Valid indices for i are those where (window_index) >= (w - 1 - i)
+        row_idx = torch.arange(N, device=device).unsqueeze(1) # (N, 1)
+        mask1 = m1 >= (self.w1 - 1 - row_idx) # (N, w1)
+        mask2 = m2 >= (self.w2 - 1 - row_idx) # (N, w2)
+        
+        # Final mask (N, 1, w1, w2)
+        mask = (mask1.unsqueeze(2) & mask2.unsqueeze(1)).unsqueeze(1)
+        A = A.masked_fill(~mask, float('-inf'))
 
-        Z = torch.stack(Z_rows)
+        # 4. Softmax and Value aggregation
+        S = F.softmax(A.reshape(N, H, -1), dim=-1).reshape(N, H, self.w1, self.w2)
+        S = self.drop(S)
+
+        # Aggregation: v~_i = sum_{j,k} S_ijk (vj * vkp)
+        # S: (N, H, w1, w2)
+        # V_win: (N, w1, H, D)
+        # Vp_win: (N, w2, H, D)
+        # Result: (N, H, D)
+        Z = torch.einsum('nhjk,njhd,nkhd->nhd', S, V_win, Vp_win)
+        
         return Z.reshape(N, self.out_dim)
-

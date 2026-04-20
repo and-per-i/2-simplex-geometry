@@ -71,6 +71,17 @@ class GeometryTranslator:
         "/": "Ratio",
         "%": "Ratio",
         "=": "≅",
+        "perp": "⟂",
+        "para": "∥",
+        "parallel": "∥",
+        "cong": "≅",
+        "sim": "∼",
+        "angle": "∠",
+        "coll": "Collinear",
+        "midpoint": "Midpoint",
+        "intersection": "Intersection",
+        "circle": "Circle",
+        "cyclic": "Cyclic"
     }
 
     def __init__(self):
@@ -105,24 +116,27 @@ class GeometryTranslator:
         if not t_clean:
             return ""
 
-        # 1. Check for points (indices or names) - Priority to avoid collision with C/T/P
-        if t_clean in self.point_map:
-            return self.point_map[t_clean]
-
-        # 2. Check for rules in the rule map
+        # Check for rules in the rule map
         if t_clean in self.RULE_MAP:
             return f"[{self.RULE_MAP[t_clean]}]"
         
-        # 3. Check for symbolic predicates
+        # Check for points (indices or names)
+        if t_clean in self.point_map:
+            return self.point_map[t_clean]
+
+        # Check for symbolic predicates or constructive keywords
+        if t_clean in self.MAP_SYMBOL:
+            return self.MAP_SYMBOL[t_clean]
+        
         upper_t = token.upper()
         if upper_t in self.MAP_SYMBOL:
             return self.MAP_SYMBOL[upper_t]
         
-        # 4. Check for generic rules starting with r
-        if t_clean.startswith("r") and len(t_clean) > 1:
+        # Check for generic rules starting with r
+        if t_clean.startswith("r") and len(t_clean) > 1 and t_clean[1].isdigit():
             return f"[Rule {t_clean.upper()}]"
         
-        # 5. Punctuation
+        # Punctuation
         if t_clean in [";", ":", "?", "="]:
             return t_clean
             
@@ -132,12 +146,16 @@ class GeometryTranslator:
         """Translates the entire raw solution into a human-readable proof."""
         self.setup_point_map(prompt)
         
-        # Clean the raw solution from potential garbage characters
-        # But keep alphanumeric, spaces, and delimiters
-        clean_solution = re.sub(r'[^a-z0-9\s;:\?=\-\+]', ' ', solution_raw.lower())
+        # Pre-process: split merged tokens like '02perp' or 'r29para'
+        # This regex looks for digits followed by letters, or 'r' digits followed by letters
+        processed_raw = re.sub(r'(\d+)([a-z]+)', r'\1 \2', solution_raw.lower())
+        processed_raw = re.sub(r'(r\d+)([a-z]+)', r'\1 \2', processed_raw)
         
-        # Tokenize
-        raw_tokens = re.findall(r'[a-z0-9]+|;|:|\?|=', clean_solution)
+        # Clean the raw solution
+        clean_solution = re.sub(r'[^a-z0-9\s;:\?=\-\+]', ' ', processed_raw)
+        
+        # Tokenize (updated to handle more patterns)
+        raw_tokens = re.findall(r'r[0-9]+|[a-z]+|[0-9]+|;|:|\?|=', clean_solution)
         
         translated_parts = []
         step_count = 1
@@ -147,7 +165,7 @@ class GeometryTranslator:
             if not translated:
                 continue
             
-            # Formatting logic: start a new step when a rule is encountered
+            # Start new step on rules
             if "[" in translated and "]" in translated:
                 translated_parts.append(f"\nSTEP {step_count:02d}: Using {translated} on")
                 step_count += 1
