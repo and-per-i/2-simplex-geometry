@@ -40,11 +40,14 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 
-# Data (handled by LFS via .gitattributes)
-# Non ignorare i parquet se vuoi caricarli su LFS
+# Data (Ignored to avoid LFS issues)
+data/
+*.parquet
 
-# Checkpoints (handled by LFS via .gitattributes)
-# Permettiamo i file di config e i pesi
+# Checkpoints (Ignored to avoid LFS issues)
+checkpoints/
+checkpoints_curriculum/
+checkpoints_finetuned/
 
 # Logs
 *.log

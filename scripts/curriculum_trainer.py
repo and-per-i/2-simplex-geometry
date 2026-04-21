@@ -155,8 +155,8 @@ def run_curriculum():
 
             training_args = TrainingArguments(
                 output_dir=output_dir,
-                per_device_train_batch_size=64,
-                gradient_accumulation_steps=2,
+                per_device_train_batch_size=8,
+                gradient_accumulation_steps=16,
                 learning_rate=lr,
                 num_train_epochs=1,
                 bf16=True,
