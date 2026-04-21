@@ -4,12 +4,13 @@ import torch
 import shutil
 from transformers import Trainer, TrainingArguments, TrainerCallback
 
-# Aggiunge src al path per caricare i moduli interni
+# Aggiunge src e symbolic al path per caricare i moduli interni
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../src/symbolic")))
 
 from src.models.student_model import StudentForCausalLM
 from src.models.student_config import StudentConfig
-from src.data.finetune_dataset import FinetuneDataset
+from src.data.system1_dataset import System1Dataset
 from tokenizer.hf_tokenizer import load_tokenizer
 
 from collections import deque
@@ -58,11 +59,26 @@ class PlateauHandlerCallback(TrainerCallback):
                 control.should_training_stop = True
 
 # --- 2. Curriculum Configuration ---
-# Definisci qui l'ordine dei dataset da affrontare
-CURRICULUM = [
-    {"level": "massive_easy", "path": "data/easy/very_easy_3000k.parquet"},
-    {"level": "medium_easy",  "path": "data/easy/easy_medium_500k.parquet"}
-]
+# Rilevamento automatico dei file nella cartella data/curriculum
+DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/curriculum"))
+
+def get_curriculum():
+    if not os.path.exists(DATA_DIR):
+        print(f"⚠️ Directory dati non trovata: {DATA_DIR}")
+        return []
+    
+    files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith(".parquet")])
+    curriculum = []
+    for f in files:
+        level_name = f.replace(".parquet", "")
+        curriculum.append({"level": level_name, "path": os.path.join("data/curriculum", f)})
+    
+    print(f"📚 Curriculum rilevato ({len(curriculum)} stage):")
+    for stage in curriculum:
+        print(f"   - {stage['level']}")
+    return curriculum
+
+CURRICULUM = get_curriculum()
 
 def run_curriculum():
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -89,29 +105,28 @@ def run_curriculum():
             batch[key] = torch.tensor(padded_seqs, dtype=torch.long)
         return batch
 
-    # --- Punto di Partenza: Auto-rilevamento dell'ULTIMO checkpoint assoluto in curriculum ---
-    curriculum_base = os.path.abspath(os.path.join(os.path.dirname(__file__), "../checkpoints_curriculum"))
+    # --- Punto di Partenza: Auto-rilevamento dell'ULTIMO checkpoint assoluto ---
+    checkpoint_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../checkpoints"))
     current_model_path = None
 
-    if os.path.exists(curriculum_base):
+    if os.path.exists(checkpoint_root):
         all_checkpoints = []
-        for root, dirs, files in os.walk(curriculum_base):
+        for root, dirs, files in os.walk(checkpoint_root):
             for d in dirs:
                 if d.startswith("checkpoint-"):
                     full_path = os.path.join(root, d)
                     all_checkpoints.append(full_path)
         
         if all_checkpoints:
-            # Prende il checkpoint con la data di modifica più recente
+            # Prende il checkpoint più recente basato sulla data di modifica
             current_model_path = max(all_checkpoints, key=os.path.getmtime)
-            print(f"🔄 Auto-detected LATEST curriculum checkpoint: {current_model_path}")
+            print(f"🔄 Auto-detected LATEST checkpoint: {current_model_path}")
 
-    # Fallback se non trova nulla in curriculum
+    # Fallback: Se non trova nulla, usa un percorso base o fallisce con grazia
     if not current_model_path or not os.path.exists(current_model_path):
-        current_model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../checkpoints_finetuned/checkpoint-9000"))
-        if not os.path.exists(current_model_path):
-            current_model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../checkpoints/checkpoint-96000"))
-        print(f"⚠️ No curriculum checkpoints found. Falling back to: {current_model_path}")
+        print("⚠️ No checkpoints found in 'checkpoints/'. Ensure you have a base model to start from.")
+        # Se hai un modello base specifico, mettilo qui come fallback estremo
+        return 
 
     print(f"🎯 Starting training from: {current_model_path}")
 
@@ -125,12 +140,12 @@ def run_curriculum():
 
         attempts = 0
         max_attempts_per_level = 2
-        base_lr = 4.0e-4
+        base_lr = 2.0e-5
 
         while attempts < max_attempts_per_level:
             # Calcolo LR: Dimezza ad ogni tentativo sullo stesso livello
             lr = base_lr / (2 ** attempts) 
-            output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../checkpoints_curriculum/{level}_try_{attempts}"))
+            output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../checkpoints/{level}_try_{attempts}"))
             
             print(f"\n" + "="*70)
             print(f"🚀 STAGE: {level.upper()} | TENTATIVO: {attempts+1}/{max_attempts_per_level} | LR: {lr:.2e}")
@@ -146,7 +161,7 @@ def run_curriculum():
             ).to(device)
 
             # Carica Dataset
-            train_dataset = FinetuneDataset(
+            train_dataset = System1Dataset(
                 path=dataset_path,
                 tokenizer=tokenizer,
                 max_length=config.max_position_embeddings
@@ -156,18 +171,19 @@ def run_curriculum():
 
             training_args = TrainingArguments(
                 output_dir=output_dir,
-                per_device_train_batch_size=8,
-                gradient_accumulation_steps=16,
+                per_device_train_batch_size=2,
+                gradient_accumulation_steps=8,
                 learning_rate=lr,
-                lr_scheduler_type="constant", # LR fisso per non farlo "addormentare"
+                lr_scheduler_type="cosine",
+                warmup_steps=100,
                 num_train_epochs=1,
                 bf16=True,
                 save_strategy="steps",
-                save_steps=1000,
+                save_steps=200,
                 logging_steps=10,
                 report_to="none",
                 optim="adamw_torch_fused",
-                save_total_limit=2,
+                save_total_limit=5,
                 remove_unused_columns=False
             )
 
