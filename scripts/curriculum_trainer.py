@@ -218,6 +218,12 @@ def run_curriculum():
             else:
                 # Training finito senza plateau (epoca completata) -> Passiamo al livello successivo
                 print(f"✅ Livello {level} completato (Epoca conclusa)!")
+                
+                # SALVATAGGIO ESPLICITO: Copia i pesi finali nella root dello stage
+                trainer.save_model(output_dir)
+                if tokenizer:
+                    tokenizer.save_pretrained(output_dir)
+                
                 current_model_path = output_dir
                 break 
 
