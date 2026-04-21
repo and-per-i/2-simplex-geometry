@@ -60,9 +60,6 @@ class PlateauHandlerCallback(TrainerCallback):
 # --- 2. Curriculum Configuration ---
 # Definisci qui l'ordine dei dataset da affrontare
 CURRICULUM = [
-    {"level": "very_easy", "path": "data/very_easy/very_easy_500k.parquet"},
-    {"level": "easy",      "path": "data/easy/easy_medium_500k.parquet"},
-    {"level": "mixed",     "path": "data/mixed/curriculum_2M.parquet"},
     {"level": "difficult", "path": "data/difficult/balanced_dataset_part_1.parquet"},
     {"level": "difficult_p2", "path": "data/difficult/balanced_dataset_part_2.parquet"}
 ]
@@ -92,13 +89,24 @@ def run_curriculum():
             batch[key] = torch.tensor(padded_seqs, dtype=torch.long)
         return batch
 
-    # Punto di partenza: usiamo l'ultimo checkpoint finetuned rilevato
-    current_model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../checkpoints_finetuned/checkpoint-9000"))
+    # --- Punto di Partenza: Auto-rilevamento dell'ultimo checkpoint del livello MIXED ---
+    base_mixed_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../checkpoints_curriculum/mixed_try_1"))
     
-    if not os.path.exists(current_model_path):
-        print(f"⚠️ Checkpoint non trovato: {current_model_path}")
+    if os.path.exists(base_mixed_path):
+        checkpoints = [d for d in os.listdir(base_mixed_path) if d.startswith("checkpoint-")]
+        if checkpoints:
+            latest = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))[-1]
+            current_model_path = os.path.join(base_mixed_path, latest)
+            print(f"🔄 Auto-detected MIXED checkpoint: {latest}")
+        else:
+            current_model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../checkpoints_finetuned/checkpoint-9000"))
+    else:
         # Fallback al checkpoint di Phase 2 se il finetuned non esiste
-        current_model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../checkpoints/checkpoint-96000"))
+        current_model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../checkpoints_finetuned/checkpoint-9000"))
+        if not os.path.exists(current_model_path):
+            current_model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../checkpoints/checkpoint-96000"))
+
+    print(f"🎯 Starting training from: {current_model_path}")
 
     for stage in CURRICULUM:
         level = stage["level"]
@@ -168,19 +176,24 @@ def run_curriculum():
 
             # Dopo il training, decidiamo cosa fare
             if plateau_callback.should_stop_for_plateau:
-                print(f"♻️ Plateau rilevato. Tentativo {attempts+1} completato.")
+                print(f"♻️ Plateau rilevato. Tentativo {attempts+1}/{max_attempts_per_level} completato.")
                 
                 # Cerchiamo l'ultimo checkpoint salvato in questa cartella per ripartire
                 checkpoints = [d for d in os.listdir(output_dir) if d.startswith("checkpoint-")]
                 if checkpoints:
                     latest = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))[-1]
                     current_model_path = os.path.join(output_dir, latest)
-                    print(f"💾 Riparerò dal prossimo tentativo usando: {latest}")
+                    print(f"💾 Checkpoint rilevato: {latest}")
                 
                 attempts += 1
+                
+                # Se abbiamo esaurito i tentativi, forziamo il passaggio al livello successivo
+                # usando comunque l'ultimo checkpoint trovato
+                if attempts >= max_attempts_per_level:
+                    print(f"⏩ Massimi tentativi raggiunti per {level}. Passo al prossimo stage con i pesi attuali.")
             else:
-                # Training finito senza plateau -> Passiamo al livello successivo
-                print(f"✅ Livello {level} completato senza plateau bloccante!")
+                # Training finito senza plateau (epoca completata) -> Passiamo al livello successivo
+                print(f"✅ Livello {level} completato (Epoca conclusa)!")
                 current_model_path = output_dir
                 break 
 
