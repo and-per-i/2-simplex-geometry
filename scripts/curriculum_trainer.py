@@ -60,8 +60,7 @@ class PlateauHandlerCallback(TrainerCallback):
 # --- 2. Curriculum Configuration ---
 # Definisci qui l'ordine dei dataset da affrontare
 CURRICULUM = [
-    {"level": "very_easy", "path": "data/very_easy/very_easy_500k.parquet"},
-    {"level": "easy",      "path": "data/easy/easy_medium_500k.parquet"}
+    {"level": "massive_easy", "path": "data/easy/very_easy_3000k.parquet"}
 ]
 
 def run_curriculum():
