@@ -125,7 +125,7 @@ def run_curriculum():
 
         attempts = 0
         max_attempts_per_level = 2
-        base_lr = 5e-5
+        base_lr = 1.5e-4
 
         while attempts < max_attempts_per_level:
             # Calcolo LR: Dimezza ad ogni tentativo sullo stesso livello
@@ -152,7 +152,7 @@ def run_curriculum():
                 max_length=config.max_position_embeddings
             )
 
-            plateau_callback = PlateauHandlerCallback(window_size=20, threshold=0.001, patience=25)
+            plateau_callback = PlateauHandlerCallback(window_size=20, threshold=0.001, patience=50)
 
             training_args = TrainingArguments(
                 output_dir=output_dir,

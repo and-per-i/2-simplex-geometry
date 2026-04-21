@@ -30,15 +30,15 @@ def run_pro_inference(prompt, model_path, tokenizer_path):
     print(f"\nPROMPT: {prompt}")
     inputs = {k: v.to(device) for k, v in tokenizer(prompt, return_tensors="pt").items()}
 
-    print("Generating proof (Beam Search, beams=5)...")
+    print("Generating proof (Greedy Search, NO sampling)...")
     with torch.no_grad():
         output_tokens = model.generate(
             **inputs, 
             max_new_tokens=512,
-            num_beams=5,
-            early_stopping=True,
-            repetition_penalty=1.2,
-            no_repeat_ngram_size=3,
+            num_beams=1,
+            do_sample=False,
+            repetition_penalty=1.5,
+            no_repeat_ngram_size=4,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id
         )
@@ -75,9 +75,9 @@ if __name__ == "__main__":
     TOKENIZER_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "../tokenizer/weights/geometry.757.model"))
 
     theorems = [
-        "a b c = triangle a b c; d = midpoint a b; e = midpoint a c; ? parallel d e b c",
-        "a b c d = circle a b c d; ? cong angle a c b angle a d b",
-        "a b c = triangle a b c; h1 = altitude a b c; h2 = altitude b a c; h = intersection h1 h2; ? perpendicular c h a b"
+        "<problem> a : ; b : ; c : ; d : midpoint a b d [000] ; e : midpoint a c e [001] ? para d e b c </problem> ",
+        "<problem> a : ; b : ; c : ; d : on_circle d a b c [000] ? eqangle a c b a d b </problem> ",
+        "<problem> a : ; b : ; c : ; h1 : altitude a b c h1 [000] ; h2 : altitude b a c h2 [001] ; h : inter h1 h2 h [002] ? perp c h a b </problem> "
     ]
 
     print("Scegli un test:")
