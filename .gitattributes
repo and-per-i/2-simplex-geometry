@@ -1,7 +1,6 @@
 # Datasets
 # Rimosso LFS per i parquet per evitare saturazione budget
 # **/*.parquet filter=lfs diff=lfs merge=lfs -text
-
 # Model Weights (Standard & HuggingFace)
 **/*.safetensors filter=lfs diff=lfs merge=lfs -text
 **/*.bin filter=lfs diff=lfs merge=lfs -text
