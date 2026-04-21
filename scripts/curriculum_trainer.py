@@ -125,7 +125,7 @@ def run_curriculum():
 
         attempts = 0
         max_attempts_per_level = 2
-        base_lr = 2.0e-4
+        base_lr = 4.0e-4
 
         while attempts < max_attempts_per_level:
             # Calcolo LR: Dimezza ad ogni tentativo sullo stesso livello
@@ -159,6 +159,7 @@ def run_curriculum():
                 per_device_train_batch_size=8,
                 gradient_accumulation_steps=16,
                 learning_rate=lr,
+                lr_scheduler_type="constant", # LR fisso per non farlo "addormentare"
                 num_train_epochs=1,
                 bf16=True,
                 save_strategy="steps",
