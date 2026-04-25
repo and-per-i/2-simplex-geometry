@@ -88,30 +88,44 @@ def parse_ag_file(filepath):
     return points, assumes, proves
 
 @torch.inference_mode()
-def get_model_suggestions(model, tok, prompt, device, k=64, temp=0.9):
+def get_model_suggestions(model, tok, prompt, device, k=1024, temp=0.9, batch_size=128):
     eos_id = tok.eos_token_id
     suggestions = []
-    for attempt in range(k):
-        inputs = tok(prompt, return_tensors="pt")
-        input_ids = inputs["input_ids"].to(device)
+    
+    inputs = tok(prompt, return_tensors="pt")
+    base_input_ids = inputs["input_ids"].to(device)
+    
+    # Batch generation for extreme speed!
+    for i in range(0, k, batch_size):
+        bsz = min(batch_size, k - i)
+        input_ids = base_input_ids.repeat(bsz, 1)
+        finished = torch.zeros(bsz, dtype=torch.bool, device=device)
         
         for _ in range(30):
             out = model(input_ids)
             logits = out["logits"] if isinstance(out, dict) else out
-            probs = torch.softmax(logits[:, -1, :] / temp, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
-            input_ids = torch.cat([input_ids, next_token], dim=-1)
-            if next_token.item() == eos_id: break
-                
-        decoded = tok.decode(input_ids[0].tolist(), skip_special_tokens=True)
-        gen = decoded[len(prompt):].strip()
-        for num, eng in REVERSE_MAP.items():
-            gen = re.sub(r'\b' + num + r'\b', eng, gen)
             
-        gen = gen.replace("▁", " ")
-        first_step = gen.split(";")[0].strip()
-        if first_step:
-            suggestions.append(first_step)
+            next_logits = logits[:, -1, :]
+            probs = torch.softmax(next_logits / temp, dim=-1)
+            next_tokens = torch.multinomial(probs, num_samples=1)
+            
+            # Padding after EOS
+            next_tokens = torch.where(finished.unsqueeze(1), torch.tensor([[eos_id]], device=device), next_tokens)
+            input_ids = torch.cat([input_ids, next_tokens], dim=-1)
+            
+            finished |= (next_tokens.squeeze(-1) == eos_id)
+            if finished.all(): break
+                
+        for b in range(bsz):
+            decoded = tok.decode(input_ids[b].tolist(), skip_special_tokens=True)
+            gen = decoded[len(prompt):].strip()
+            for num, eng in REVERSE_MAP.items():
+                gen = re.sub(r'\b' + num + r'\b', eng, gen)
+                
+            gen = gen.replace("▁", " ")
+            first_step = gen.split(";")[0].strip()
+            if first_step:
+                suggestions.append(first_step)
             
     seen = set()
     unique_sugg = []
@@ -121,26 +135,50 @@ def get_model_suggestions(model, tok, prompt, device, k=64, temp=0.9):
             unique_sugg.append(s)
     return unique_sugg
 
-def translate_suggestion_to_newclid(suggestion):
-    parts = [p for p in suggestion.split() if not re.match(r'^[ra]\d+$', p) and not p.isdigit() and p != 'x00']
+def translate_suggestion_to_newclid(suggestion, prompt):
+    # Extract current points from the prompt setup
+    setup = prompt.split("?")[0]
+    current_points = []
+    for clause in setup.split(";"):
+        if ":" in clause:
+            p = clause.split(":")[0].strip()
+            if p: current_points.append(p)
+            
+    # Remove rule tokens like r51, a00, x00 but KEEP numbers like 2, 1/2
+    parts = [p for p in suggestion.split() if not re.match(r'^[ra]\d+$', p) and p != 'x00']
     if len(parts) < 3: return ""
-    pred = parts[0]
-    target = parts[1]
-    args = [p for p in parts[1:] if len(p) <= 2]
     
+    pred = parts[0]
+    args = parts[1:]
+    
+    # Find target: the first single letter argument that is not in current_points
+    target = None
+    for p in args:
+        if len(p) <= 2 and p.isalpha() and p not in current_points:
+            target = p
+            break
+            
+    if not target:
+        # Not creating a new point -> not a valid auxiliary construction for JGEX point creation
+        return ""
+        
     mapping = {
-        "midp": "midpoint", "midpoint": "midpoint", "coll": "on_line",
-        "perp": "on_tline", "para": "on_pline", "cong": "eqdistance", "circle": "on_circum"
+        "midp": "midpoint", "midpoint": "midpoint", 
+        "coll": "on_line", "perp": "on_tline", "para": "on_pline", 
+        "cong": "eqdistance", "circle": "on_circum",
+        "rconst": "rconst", "eqratio": "eqratio", "eqangle": "eqangle"
     }
+    
     if pred not in mapping: return ""
     n_pred = mapping[pred]
     
-    if n_pred == "midpoint": final_args = args[:3]
-    elif n_pred == "on_line": final_args = args[:3]
-    elif n_pred in ["on_tline", "on_pline", "eqdistance", "on_circum"]: final_args = args[:4]
-    else: return ""
+    if n_pred == "midpoint": final_args = [a for a in args if a != target][:2]
+    elif n_pred == "on_line": final_args = [a for a in args if a != target][:2]
+    elif n_pred in ["on_tline", "on_pline", "eqdistance", "on_circum"]: final_args = [a for a in args if a != target][:3]
+    elif n_pred in ["rconst", "eqratio", "eqangle"]: final_args = args # Keep all arguments including the target
+    else: final_args = args
     
-    if len(final_args) < 3: return ""
+    if len(final_args) < 2: return ""
     return f"; {target} = {n_pred} {' '.join(final_args)}"
 
 def append_suggestion_to_prompt(prompt, sugg):
@@ -168,7 +206,7 @@ def load_model(device):
     model.eval()
     return model, tok
 
-def run_depth_search_for_problem(fname, model, tok, device, max_depth=5):
+def run_depth_search_for_problem(fname, model, tok, device, max_depth=3):
     trans_dir = ROOT_DIR / "imo_translated"
     raw_dir = ROOT_DIR / "imo_ag_30"
     
@@ -180,21 +218,22 @@ def run_depth_search_for_problem(fname, model, tok, device, max_depth=5):
     
     print(f"\n📝 Analisi: {fname} (Max Depth={max_depth})")
     
-    # Nodi = [(sugg_chain_string, aug_jgex, prompt)]
     current_nodes = [("", jgex_str, initial_prompt)]
     
     for depth in range(1, max_depth + 1):
-        print(f"   [Depth {depth}] Generazione espansioni da {len(current_nodes)} nodi...")
+        print(f"   [Depth {depth}] Generazione massiva da {len(current_nodes)} nodi precedenti...")
         next_candidates = []
         
         for sugg_chain, jgex, prompt in current_nodes:
-            # Piu k al depth 1, meno k ai successivi per contenere l'esplosione combinatoria
-            k_val = 64 if depth == 1 else 16
-            suggs = get_model_suggestions(model, tok, prompt, device, k=k_val, temp=0.9)
+            # Ampiezza massiva: 2048 tentativi iniziali, 64 in profondità!
+            k_val = 2048 if depth == 1 else 64
+            batch_sz = 128 if ("cuda" in str(device) or "mps" in str(device)) else 32
+            
+            suggs = get_model_suggestions(model, tok, prompt, device, k=k_val, temp=0.9, batch_size=batch_sz)
             
             jgex_setup, jgex_goal = jgex.split("?")
             for sugg in suggs:
-                newclid_sugg = translate_suggestion_to_newclid(sugg)
+                newclid_sugg = translate_suggestion_to_newclid(sugg, prompt)
                 if newclid_sugg:
                     aug_jgex = f"{jgex_setup.strip()} {newclid_sugg} ? {jgex_goal.strip()}"
                     new_prompt = append_suggestion_to_prompt(prompt, sugg)
@@ -202,10 +241,10 @@ def run_depth_search_for_problem(fname, model, tok, device, max_depth=5):
                     next_candidates.append((new_chain, aug_jgex, new_prompt))
                     
         if not next_candidates:
-            print(f"   [Depth {depth}] Nessuna costruzione valida generata. Fine ramo.")
+            print(f"   [Depth {depth}] Nessuna costruzione valida generata.")
             return False
             
-        print(f"   [Depth {depth}] Test di {len(next_candidates)} rami composti con DDARN...")
+        print(f"   [Depth {depth}] Trovati {len(next_candidates)} rami unici e validi! Test con DDARN...")
         tasks = [(item[1], 15, i) for i, item in enumerate(next_candidates)]
         num_cores = max(1, mp.cpu_count())
         
@@ -226,28 +265,31 @@ def run_depth_search_for_problem(fname, model, tok, device, max_depth=5):
                     
         print(f"   ❌ [Depth {depth}] Nessun successo.")
         if depth < max_depth:
-            print("   Tengo i migliori 16 rami per espanderli al prossimo livello...")
-            current_nodes = next_candidates[:16]
+            print("   Tengo i migliori 64 rami per l'espansione del prossimo livello...")
+            current_nodes = next_candidates[:64]
 
     print(f"   ❌ Fallito anche a Depth {max_depth}.")
     return False
 
 def main():
     print("="*80)
-    print("🚀 ESPERIMENTO FINALE: BEAM SEARCH (DEPTH=100) SU UN SINGOLO PROBLEMA")
+    print("🚀 GOOGLE DEEPMIND SIMULATION: BATCHED GPU GENERATION + 128 CORE DDARN")
     print("="*80)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     model, tok = load_model(device)
 
-    # Esploriamo fino al centro della terra con un solo problema che ha dimostrato di generare tanti rami validi
+    # Torniamo a testare la suite IMO
     problems = [
-        "translated_imo_2004_p1.txt"
+        "translated_imo_2004_p1.txt",
+        "translated_imo_2000_p1.txt",
+        "translated_imo_2004_p5.txt",
+        "translated_imo_2008_p1a.txt"
     ]
     
     solved_count = 0
     for prob in problems:
-        success = run_depth_search_for_problem(prob, model, tok, device, max_depth=100)
+        success = run_depth_search_for_problem(prob, model, tok, device, max_depth=3)
         if success:
             solved_count += 1
             print("\n🎉 ABBIAMO UN VINCITORE! Il sistema ha sbloccato una IMO!")
