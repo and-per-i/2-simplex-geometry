@@ -228,14 +228,14 @@ def main():
         per_device_train_batch_size=16,
         gradient_accumulation_steps=4,          # batch virtuale = 64
 
-        learning_rate=5e-5,                     # 10× sotto la distillazione
+        learning_rate=1e-4,                     # Aumentato per ri-addestramento attenzione causale
         weight_decay=0.01,
         adam_beta1=0.9,
         adam_beta2=0.999,
         adam_epsilon=1e-8,
         max_grad_norm=0.5,
 
-        warmup_steps=100,
+        warmup_steps=1000,                      # Più warmup visto il dataset grande
         lr_scheduler_type="cosine",
 
         fp16=use_fp16,
@@ -256,7 +256,7 @@ def main():
 
     logger.info(f"\n⚙️  Config:")
     logger.info(f"   LR={training_args.learning_rate}  Batch effettivo=64")
-    logger.info(f"   FP16={use_fp16}  Scheduler=cosine  Warmup=100")
+    logger.info(f"   FP16={use_fp16}  Scheduler=cosine  Warmup=1000")
 
     # ── Avvio ─────────────────────────────────────────────────────────────────
     trainer = FineTuneTrainer(
