@@ -17,8 +17,8 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from student_progressive import StudentModelProgressive
 from tokenizer.hf_tokenizer import load_tokenizer
 
-def generate_text(model, input_ids, max_new_tokens, eos_token_id):
-    """Semplice generazione auto-regressiva (greedy decoding)"""
+def generate_text(model, input_ids, max_new_tokens, eos_token_id, repetition_penalty=1.2):
+    """Semplice generazione auto-regressiva con repetition penalty"""
     device = input_ids.device
     
     for _ in range(max_new_tokens):
@@ -27,6 +27,16 @@ def generate_text(model, input_ids, max_new_tokens, eos_token_id):
             
         logits = out["logits"] if isinstance(out, dict) else out
         next_token_logits = logits[:, -1, :]
+        
+        # Applica repetition penalty
+        if repetition_penalty != 1.0:
+            for i in range(input_ids.shape[1]):
+                token = input_ids[0, i].item()
+                if next_token_logits[0, token] < 0:
+                    next_token_logits[0, token] *= repetition_penalty
+                else:
+                    next_token_logits[0, token] /= repetition_penalty
+                    
         next_token = torch.argmax(next_token_logits, dim=-1).unsqueeze(-1)
         
         input_ids = torch.cat([input_ids, next_token], dim=-1)
@@ -91,8 +101,9 @@ def main():
         out_ids = generate_text(
             model=model, 
             input_ids=input_ids, 
-            max_new_tokens=150, 
-            eos_token_id=tok.eos_token_id
+            max_new_tokens=50, 
+            eos_token_id=tok.eos_token_id,
+            repetition_penalty=1.5
         )
             
         generated_text = tok.decode(out_ids[0].tolist(), skip_special_tokens=True)
