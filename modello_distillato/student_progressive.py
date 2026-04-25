@@ -72,6 +72,11 @@ class SimplexAttention(nn.Module):
         
         # Attenzione standard
         scores = (Q @ K.transpose(-2, -1)) / self.scale
+        
+        # Causal Mask (NON SBIRCIARE IL FUTURO!)
+        causal_mask = torch.triu(torch.ones(T, T, dtype=torch.bool, device=x.device), diagonal=1)
+        scores = scores.masked_fill(causal_mask, float('-inf'))
+        
         attn = torch.softmax(scores, dim=-1)
         attn = self.dropout(attn)
         out_standard = attn @ V  # (B, nh, T, hd)
@@ -82,6 +87,7 @@ class SimplexAttention(nn.Module):
             
             # Attenzione con K'
             scores_prime = (Q @ K_prime.transpose(-2, -1)) / self.scale
+            scores_prime = scores_prime.masked_fill(causal_mask, float('-inf'))
             attn_prime = torch.softmax(scores_prime, dim=-1)
             attn_prime = self.dropout(attn_prime)
             out_prime = attn_prime @ V
@@ -245,12 +251,15 @@ class StudentModelProgressive(nn.Module):
         x = self.ln_f(x)
         logits = self.lm_head(x)  # (B, T, vocab_size)
         
-        # Calcolo loss se labels forniti
+        # Calcolo loss se labels forniti (Shift per autoregressive!)
         loss = None
         if labels is not None:
+            # Shift dei logits e labels: predici il token T+1 dato il token T
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
             loss = nn.functional.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                labels.view(-1),
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
                 ignore_index=-100
             )
         
