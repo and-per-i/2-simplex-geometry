@@ -214,12 +214,18 @@ def main():
     
     for i, sugg in enumerate(suggestions):
         newclid_sugg = translate_suggestion_to_newclid(sugg)
-        if not newclid_sugg: continue
+        if not newclid_sugg: 
+            print(f"   ⚠️ Scartata dal parser: {sugg}")
+            continue
         aug_jgex = f"{setup.strip()} {newclid_sugg} ? {goal.strip()}"
         tasks.append((aug_jgex, 20, i+1, len(suggestions))) # timeout = 20s
         
-    num_cores = min(mp.cpu_count(), len(tasks))
-    print(f"\n🚀 Avvio Beam Search Parallelo con {num_cores} Core della CPU...")
+    if not tasks:
+        print("\n❌ Nessuna costruzione generata ha superato il filtro sintattico. Riprova alzando k o Temp.")
+        return
+        
+    num_cores = max(1, min(mp.cpu_count(), len(tasks)))
+    print(f"\n🚀 Avvio Beam Search Parallelo su {len(tasks)} rami validi, usando {num_cores} Core della CPU...")
     
     solved = False
     winning_sugg = ""
