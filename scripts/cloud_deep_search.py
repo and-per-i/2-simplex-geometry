@@ -231,26 +231,20 @@ def run_depth_search_for_problem(fname, model, tok, device, max_depth=5):
 
 def main():
     print("="*80)
-    print("🚀 MIRACOLO IMO: BEAM SEARCH (DEPTH=5) SU TUTTO IL BENCHMARK")
+    print("🚀 ESPERIMENTO FINALE: BEAM SEARCH (DEPTH=100) SU UN SINGOLO PROBLEMA")
     print("="*80)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     model, tok = load_model(device)
 
-    # Elenco dei problemi più "facili" prima, poi gli altri
+    # Esploriamo fino al centro della terra con un solo problema che ha dimostrato di generare tanti rami validi
     problems = [
-        "translated_imo_2019_p2_easy.txt",
-        "translated_imo_2004_p5.txt",
-        "translated_imo_2000_p1.txt",
-        "translated_imo_2002_p2b.txt",
-        "translated_imo_2004_p1.txt",
-        "translated_imo_2005_p5.txt",
-        "translated_imo_2008_p1a.txt"
+        "translated_imo_2004_p1.txt"
     ]
     
     solved_count = 0
     for prob in problems:
-        success = run_depth_search_for_problem(prob, model, tok, device)
+        success = run_depth_search_for_problem(prob, model, tok, device, max_depth=100)
         if success:
             solved_count += 1
             print("\n🎉 ABBIAMO UN VINCITORE! Il sistema ha sbloccato una IMO!")
