@@ -209,18 +209,21 @@ def run_depth_search_for_problem(fname, model, tok, device, max_depth=5):
         tasks = [(item[1], 15, i) for i, item in enumerate(next_candidates)]
         num_cores = max(1, mp.cpu_count())
         
-        try:
-            from tqdm import tqdm
-            iterator = tqdm(mp.Pool(num_cores).imap_unordered(solve_worker, tasks), total=len(tasks), desc=f"D{depth}", leave=False)
-        except ImportError:
-            iterator = mp.Pool(num_cores).imap_unordered(solve_worker, tasks)
-            
-        for success, task_id, _ in iterator:
-            if success:
-                print(f"\n   ✅✅ [Depth {depth}] DIMOSTRATO!!! 🏆")
-                print(f"   Catena risolutiva: {next_candidates[task_id][0]}")
-                return True
+        with mp.Pool(num_cores) as pool:
+            try:
+                from tqdm import tqdm
+                iterator = tqdm(pool.imap_unordered(solve_worker, tasks), total=len(tasks), desc=f"D{depth}", leave=False)
+            except ImportError:
+                iterator = pool.imap_unordered(solve_worker, tasks)
                 
+            depth_solved = False
+            for success, task_id, _ in iterator:
+                if success:
+                    print(f"\n   ✅✅ [Depth {depth}] DIMOSTRATO!!! 🏆")
+                    print(f"   Catena risolutiva: {next_candidates[task_id][0]}")
+                    pool.terminate()
+                    return True
+                    
         print(f"   ❌ [Depth {depth}] Nessun successo.")
         if depth < max_depth:
             print("   Tengo i migliori 16 rami per espanderli al prossimo livello...")
