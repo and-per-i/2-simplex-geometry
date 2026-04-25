@@ -227,16 +227,25 @@ def main():
     # Esegui i task sui core della CPU in parallelo!
     t1 = time.time()
     with mp.Pool(processes=num_cores) as pool:
-        for result in pool.imap_unordered(solve_worker, tasks):
+        try:
+            from tqdm import tqdm
+            iterator = tqdm(pool.imap_unordered(solve_worker, tasks), total=len(tasks), desc="🌳 Rami DDARN")
+            use_tqdm = True
+        except ImportError:
+            iterator = pool.imap_unordered(solve_worker, tasks)
+            use_tqdm = False
+            
+        for result in iterator:
             success, sugg_idx, aug_jgex = result
             if success:
                 solved = True
                 winning_sugg = aug_jgex
-                print(f"   ✅ [Worker {sugg_idx}] DIMOSTRATO!!! Trovata soluzione valida!")
+                print(f"\n   ✅ [Worker {sugg_idx}] DIMOSTRATO!!! Trovata soluzione valida!")
                 pool.terminate() # Abbiamo vinto, ferma tutti gli altri!
                 break
             else:
-                print(f"   ❌ [Worker {sugg_idx}] Fallito           ", end="\r")
+                if not use_tqdm:
+                    print(f"   ❌ [Worker {sugg_idx}] Fallito           ", end="\r")
 
     if solved:
         print("\n\n" + "="*80)
