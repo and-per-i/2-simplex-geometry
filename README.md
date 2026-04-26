@@ -124,7 +124,15 @@ The system pairs the neural intuition of our **2-Simplicial Transformer** with t
 - [x] Numerical Validation (CUDA)
 - [x] AlphaGeometry Distillation Pipeline (Fine-Tuning started)
 - [x] Large Scale Geometric Dataset Balancing (2M samples)
-- [ ] Multi-Batch Support (currently optimized for $B=1$)
+- [x] Batched Generation & Inference Support
+- [x] Newclid / DDARN Symbolic Engine Integration
+- [x] Deep Test-Time Compute Beam Search (Multi-processing CPU)
+
+## Future Work
+
+To reach full IMO-level problem-solving capabilities, the following upgrades are planned:
+- **150M+ Parameter Distillation:** Scale the `StudentModelProgressive` to 150M+ parameters and distill from a massive 1B+ parameter geometry model trained on 100M synthetic datasets. This will sharpen the geometric intuition for `Pass@2048`.
+- **Rolling Buffer KV Cache:** Implement an $O(1)$ memory Rolling Buffer KV Cache directly inside the Triton kernels. Since 2-Simplicial Attention operates on a restricted sliding window, the KV Cache size is strictly bounded, enabling infinitely long generation without memory explosion.
 
 ## License
 
