@@ -22,7 +22,8 @@ class TwoSimplicialAttention(nn.Module):
         the per-node loop is kept since each node has a variable number of neighbors.
     """
 
-    def __init__(self, in_dim, out_dim=None, num_heads=4, dropout=0.0, with_residual=True, use_triton_kernel=True, w1=8, w2=8):
+    def __init__(self, in_dim, out_dim=None, num_heads=4, dropout=0.1, 
+                 with_residual=True, with_norm=True, use_triton_kernel=True, w1=8, w2=8):
         super().__init__()
         self.in_dim = int(in_dim)
         self.out_dim = int(out_dim) if out_dim is not None else self.in_dim
@@ -31,6 +32,7 @@ class TwoSimplicialAttention(nn.Module):
         self.head_dim = self.out_dim // self.num_heads
         self.dropout = dropout
         self.with_residual = with_residual
+        self.with_norm = with_norm
         self.use_triton_kernel = bool(use_triton_kernel)
         self.w1 = w1
         self.w2 = w2
@@ -46,95 +48,93 @@ class TwoSimplicialAttention(nn.Module):
         self.norm = nn.LayerNorm(self.out_dim)
         self.drop = nn.Dropout(self.dropout)
 
-    def forward(self, x, batch=None):
+    def forward(self, x):
         """
-        x: Tensor of shape (N, in_dim)
-        batch: not used in MVP
-        Returns: Tensor of shape (N, out_dim)
+        x: Tensor of shape (B, S, in_dim) or (N, in_dim)
+        Returns: Tensor of shape (B, S, out_dim) or (N, out_dim)
         """
-        if x.dim() != 2:
-            raise ValueError("input x must be (N, in_dim)")
-        N, _ = x.shape
-        Q = self.q_proj(x).view(N, self.num_heads, self.head_dim)  # (N, H, D)
-        K = self.k_proj(x).view(N, self.num_heads, self.head_dim)
-        V = self.v_proj(x).view(N, self.num_heads, self.head_dim)
-        Kp = self.kp_proj(x).view(N, self.num_heads, self.head_dim)
-        Vp = self.vp_proj(x).view(N, self.num_heads, self.head_dim)
+        is_batched = x.dim() == 3
+        if is_batched:
+            B, S, _ = x.shape
+        else:
+            if x.dim() != 2:
+                raise ValueError("input x must be (B, S, in_dim) or (N, in_dim)")
+            N, _ = x.shape
+            B, S = 1, N
+
+        Q = self.q_proj(x).view(B, S, self.num_heads, self.head_dim)
+        K = self.k_proj(x).view(B, S, self.num_heads, self.head_dim)
+        V = self.v_proj(x).view(B, S, self.num_heads, self.head_dim)
+        Kp = self.kp_proj(x).view(B, S, self.num_heads, self.head_dim)
+        Vp = self.vp_proj(x).view(B, S, self.num_heads, self.head_dim)
 
         # Use optimized Triton path if requested and on CUDA
         if self.use_triton_kernel and x.is_cuda:
             try:
-                # Lazy import; tests/local envs may not have Triton kernel available yet
-                from ..kernels.two_simplicial_autograd import TwoSimplicialAttentionFunction  # type: ignore
-                Z_concat = TwoSimplicialAttentionFunction.apply(
+                from ..kernels.two_simplicial_autograd import TwoSimplicialAttentionFunction
+                Z = TwoSimplicialAttentionFunction.apply(
                     x, Q, K, V, Kp, Vp, self.out_dim, self.num_heads, self.head_dim, self.w1, self.w2
-                ).reshape(N, self.out_dim)
+                )
             except Exception:
-                # Fall back to PyTorch MVP if Triton kernel fails or is unavailable
-                Z_concat = self._forward_pytorch(N, Q, K, V, Kp, Vp)
+                # Robust fallback for any Triton/CUDA error (OOM, shape mismatch, etc.)
+                Z = self._forward_pytorch(Q, K, V, Kp, Vp)
         else:
-            # Standard PyTorch path (CPU or explicitly requested)
-            Z_concat = self._forward_pytorch(N, Q, K, V, Kp, Vp)
+            Z = self._forward_pytorch(Q, K, V, Kp, Vp)
 
+        Z_concat = Z.reshape(x.shape[0:-1] + (self.out_dim,))
         out = self.out_proj(Z_concat)
+        
         if self.with_residual and out.shape == x.shape:
             out = out + x
-        out = self.norm(out)
+        if self.with_norm:
+            out = self.norm(out)
         return out
 
-    def _forward_pytorch(self, N, Q, K, V, Kp, Vp):
-        """Vectorized PyTorch implementation with Sliding Window (No loops)."""
+    def _forward_pytorch(self, Q, K, V, Kp, Vp):
+        """Vectorized PyTorch implementation with Strictly Causal Sliding Window."""
+        B, S, H, D = Q.shape
         device = Q.device
         dtype = Q.dtype
-        H, D = self.num_heads, self.head_dim
 
-        # 1. Create sliding window views for K and Kp
-        # We want tensors of shape (N, W, H, D) where W is the window size.
-        # We pad the sequences at the beginning to handle the first tokens.
-        def get_windows(tensor, window_size):
-            # Pad with zeros at the start: (window_size-1, H, D)
-            padded = torch.cat([torch.zeros(window_size - 1, H, D, device=device, dtype=dtype), tensor], dim=0)
-            # Use unfold to get sliding windows: (N, window_size, H, D)
-            return padded.unfold(0, window_size, 1).permute(0, 3, 1, 2)
+        def get_causal_windows(tensor, window_size):
+            # To get [i-w+1, i] for token i:
+            # 1. Pad at the START with w-1 zeros
+            padded = torch.cat([
+                torch.zeros(B, window_size - 1, H, D, device=device, dtype=dtype),
+                tensor
+            ], dim=1)
+            # 2. Unfold on the sequence dimension (dim 1)
+            # Result shape: (B, S, H, D, window_size)
+            # Index i on dim 1 gives padded[:, i:i+window_size, :, :]
+            # which ends at original tensor index i.
+            return padded.unfold(1, window_size, 1).permute(0, 1, 4, 2, 3)
 
-        K_win = get_windows(K, self.w1)   # (N, w1, H, D)
-        Kp_win = get_windows(Kp, self.w2) # (N, w2, H, D)
-        V_win = get_windows(V, self.w1)   # (N, w1, H, D)
-        Vp_win = get_windows(Vp, self.w2) # (N, w2, H, D)
+        K_win = get_causal_windows(K, self.w1)   # (B, S, w1, H, D)
+        Kp_win = get_causal_windows(Kp, self.w2) # (B, S, w2, H, D)
+        V_win = get_causal_windows(V, self.w1)   # (B, S, w1, H, D)
+        Vp_win = get_causal_windows(Vp, self.w2) # (B, S, w2, H, D)
 
-        # 2. Compute attention scores A_ijk = (qi * kj * kkp) / sqrt(d)
-        # Q: (N, H, D) -> (N, 1, 1, H, D)
-        # K_win: (N, w1, H, D) -> (N, w1, 1, H, D)
-        # Kp_win: (N, w2, H, D) -> (N, 1, w2, H, D)
+        # A_ijk[b, s, h, j, k] = sum_d Q[b, s, h, d] * K_win[b, s, j, h, d] * Kp_win[b, s, k, h, d]
+        A = torch.einsum('bshd,bsjhd,bskhd->bshjk', Q, K_win, Kp_win) / (D ** 0.5)
+
+        # Mask padding (zeros at the beginning of the sequence)
+        # For sequence position s, the window contains w elements.
+        # Elements at window index j are valid if s - (w - 1 - j) >= 0
+        j_idx = torch.arange(self.w1, device=device).view(1, 1, self.w1)
+        s_idx = torch.arange(S, device=device).view(1, S, 1)
+        mask1 = j_idx >= (self.w1 - 1 - s_idx) # (1, S, w1)
         
-        # Optimized einsum: (N, H, w1, w2)
-        # A_ijk[n, h, j, k] = sum_d Q[n, h, d] * K_win[n, j, h, d] * Kp_win[n, k, h, d]
-        A = torch.einsum('nhd,njhd,nkhd->nhjk', Q, K_win, Kp_win) / (D ** 0.5)
-
-        # 3. Masking: indices in the window that are actually padding (before the sequence start)
-        # For each i, the window covers [i-w+1, i]. If i-w+1 < 0, some elements are padding.
-        # We create a mask of shape (N, w1, w2)
-        m1 = torch.arange(self.w1, device=device).unsqueeze(0) # (1, w1)
-        m2 = torch.arange(self.w2, device=device).unsqueeze(0) # (1, w2)
+        k_idx = torch.arange(self.w2, device=device).view(1, 1, self.w2)
+        mask2 = k_idx >= (self.w2 - 1 - s_idx) # (1, S, w2)
         
-        # Valid indices for i are those where (window_index) >= (w - 1 - i)
-        row_idx = torch.arange(N, device=device).unsqueeze(1) # (N, 1)
-        mask1 = m1 >= (self.w1 - 1 - row_idx) # (N, w1)
-        mask2 = m2 >= (self.w2 - 1 - row_idx) # (N, w2)
-        
-        # Final mask (N, 1, w1, w2)
-        mask = (mask1.unsqueeze(2) & mask2.unsqueeze(1)).unsqueeze(1)
+        mask = (mask1.unsqueeze(3) & mask2.unsqueeze(2)).unsqueeze(2) # (1, S, 1, w1, w2)
         A = A.masked_fill(~mask, float('-inf'))
 
-        # 4. Softmax and Value aggregation
-        S = F.softmax(A.reshape(N, H, -1), dim=-1).reshape(N, H, self.w1, self.w2)
-        S = self.drop(S)
+        S_attn = F.softmax(A.reshape(B, S, H, -1), dim=-1).reshape(B, S, H, self.w1, self.w2)
+        S_attn = self.drop(S_attn)
 
-        # Aggregation: v~_i = sum_{j,k} S_ijk (vj * vkp)
-        # S: (N, H, w1, w2)
-        # V_win: (N, w1, H, D)
-        # Vp_win: (N, w2, H, D)
-        # Result: (N, H, D)
-        Z = torch.einsum('nhjk,njhd,nkhd->nhd', S, V_win, Vp_win)
+        # Z[b, s, h, d] = sum_{j,k} S[b, s, h, j, k] * (V_win[b, s, j, h, d] * Vp_win[b, s, k, h, d])
+        Z = torch.einsum('bshjk,bsjhd,bskhd->bshd', S_attn, V_win, Vp_win)
         
-        return Z.reshape(N, self.out_dim)
+        return Z
+

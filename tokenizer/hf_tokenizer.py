@@ -50,11 +50,13 @@ class AlphaGeometryHFTokenizer(PreTrainedTokenizer):
         eos_token: str = "</s>",
         sp_model_kwargs: Optional[Dict] = None,
         add_prefix_space: bool = False,
+        override_vocab_size: Optional[int] = 1024,
         **kwargs,
     ):
         self.sp_model_kwargs = sp_model_kwargs or {}
         self.vocab_file = vocab_file
         self.add_prefix_space = add_prefix_space
+        self.override_vocab_size = override_vocab_size
 
         # Carica il modello SentencePiece direttamente (no subprocess)
         self.sp_model = spm.SentencePieceProcessor(**self.sp_model_kwargs)
@@ -76,13 +78,29 @@ class AlphaGeometryHFTokenizer(PreTrainedTokenizer):
 
     @property
     def vocab_size(self) -> int:
-        """Ritorna 757 per geometry.757.model."""
+        """Ritorna la dimensione del vocabolario (1024 by default, 757 real tokens)."""
+        if self.override_vocab_size:
+            return self.override_vocab_size
         return self.sp_model.GetPieceSize()
+    
+    @property
+    def semicolon_id(self) -> int:
+        """Token ID per il semicolon (;), usato come EOS marker in geometria."""
+        return 263  # Verificato da pt_ckpt/vocab.model
 
     def get_vocab(self) -> Dict[str, int]:
-        vocab = {
-            self.sp_model.IdToPiece(i): i for i in range(self.vocab_size)
-        }
+        vocab = {}
+        sp_size = self.sp_model.GetPieceSize()
+        
+        # Real tokens (0-756)
+        for i in range(min(sp_size, self.vocab_size)):
+            piece = self.sp_model.IdToPiece(i)
+            vocab[piece] = i
+        
+        # Padding tokens (757-1023 se vocab_size=1024)
+        for i in range(sp_size, self.vocab_size):
+            vocab[f"<extra_id_{i}>"] = i
+        
         # Aggiungi i token speciali aggiunti (quelli fuori dall'SP)
         vocab.update(self.added_tokens_encoder)
         return vocab
@@ -103,7 +121,10 @@ class AlphaGeometryHFTokenizer(PreTrainedTokenizer):
 
     def _convert_id_to_token(self, index: int) -> str:
         """Converte un ID intero nel suo piece-string."""
-        return self.sp_model.IdToPiece(index)
+        try:
+            return self.sp_model.IdToPiece(index)
+        except:
+            return f"<extra_id_{index}>"
 
     def convert_tokens_to_string(self, tokens: List[str]) -> str:
         """Riconverte una lista di piece-strings in testo (decode)."""
@@ -157,12 +178,14 @@ class AlphaGeometryHFTokenizer(PreTrainedTokenizer):
 
 def load_tokenizer(
     model_path: str = "tokenizer/weights/geometry.757.model",
+    vocab_size: Optional[int] = 1024,
 ) -> AlphaGeometryHFTokenizer:
     """
     Carica il tokenizer AlphaGeometry in modalità HF-compatible.
 
     Args:
         model_path: percorso assoluto o relativo al file .model SP.
+        vocab_size: dimensione vocabolario (default 1024 per compatibilità con AG convertito).
 
     Returns:
         AlphaGeometryHFTokenizer pronto per essere usato con Trainer.
@@ -173,4 +196,4 @@ def load_tokenizer(
             f"Tokenizer model non trovato: {model_path}\n"
             "Verifica che il file geometry.757.model esista."
         )
-    return AlphaGeometryHFTokenizer(vocab_file=model_path)
+    return AlphaGeometryHFTokenizer(vocab_file=model_path, override_vocab_size=vocab_size)

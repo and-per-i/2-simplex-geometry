@@ -176,7 +176,7 @@ if _check_triton():
         K2_BIAS: tl.constexpr, V2_BIAS: tl.constexpr,
         num_stages: tl.constexpr, IS_SECOND_PASS: tl.constexpr,
     ):
-        assert BLOCK_SIZE_KV2 == BLOCK_SIZE_Q + w2
+        # Ensure the KV2 block is at least large enough to cover the window [q_start - w2, q_end]
         data_dtype = tl.bfloat16
         compute_dtype = tl.float32
         gemm_dtype = tl.bfloat16
@@ -280,30 +280,39 @@ if _check_triton():
         tl.store(dV2_ptr + kv2_offs, dv2.to(data_dtype), kv2_mask)
         tl.store(dQ_ptr + q_offs, dq.to(data_dtype), q_mask)
 
-def backward(grad_output, x, Q, K, V, Kp, Vp, out_dim, num_heads, head_dim, w1=8, w2=8):
+def backward(grad_output, x, Q, K, V, Kp, Vp, O, M, out_dim, num_heads, head_dim, w1=8, w2=8):
     """Backward pass entry point."""
     if not _check_triton():
         raise RuntimeError("Triton not available.")
 
-    N = Q.size(0)
-    H = num_heads
-    D = head_dim
+    # Validation
+    for t in [grad_output, Q, K, V, Kp, Vp, O]:
+        if not t.is_cuda:
+            raise ValueError("All input tensors must be on CUDA for Triton kernels.")
 
-    # Reshape all to [1, N, H, D] — matches kernel layout [B, S, H, D]
-    Q_r = Q.view(1, N, H, D).contiguous()
-    K_r = K.view(1, N, H, D).contiguous()
-    V_r = V.view(1, N, H, D).contiguous()
-    Kp_r = Kp.view(1, N, H, D).contiguous()
-    Vp_r = Vp.view(1, N, H, D).contiguous()
-    dO_r = grad_output.view(1, N, H, D).contiguous()
+    # Handle both (N, H, D) and (B, S, H, D) inputs
 
-    from . import triton_2s_forward
-    O_r, M_r = triton_2s_forward.forward(x, Q, K, V, Kp, Vp, out_dim, num_heads, head_dim, w1, w2)
-    O_r = O_r.view(1, N, H, D).contiguous()
-    M_r = M_r.view(1, H, N).contiguous()
+    if Q.dim() == 3:
+        N = Q.size(0)
+        bs = 1
+        seq_len = N
+        Q_r = Q.view(bs, seq_len, num_heads, head_dim).contiguous()
+        K_r = K.view(bs, seq_len, num_heads, head_dim).contiguous()
+        V_r = V.view(bs, seq_len, num_heads, head_dim).contiguous()
+        Kp_r = Kp.view(bs, seq_len, num_heads, head_dim).contiguous()
+        Vp_r = Vp.view(bs, seq_len, num_heads, head_dim).contiguous()
+        dO_r = grad_output.view(bs, seq_len, num_heads, head_dim).contiguous()
+        O_r = O.view(bs, seq_len, num_heads, head_dim).contiguous()
+        M_r = M.view(bs, num_heads, seq_len).contiguous()
+    else:
+        bs, seq_len, _, _ = Q.shape
+        Q_r, K_r, V_r, Kp_r, Vp_r = Q.contiguous(), K.contiguous(), V.contiguous(), Kp.contiguous(), Vp.contiguous()
+        dO_r = grad_output.contiguous()
+        O_r = O.contiguous()
+        M_r = M.contiguous()
 
-    # D_row = rowsum(dO * O): sum over head_dim axis (dim=3), result [1, N, H] -> permute to [1, H, N]
-    D_row = (dO_r.float() * O_r.float()).sum(dim=3).permute(0, 2, 1).contiguous()  # [1, H, N]
+    # D_row = rowsum(dO * O): sum over head_dim axis (dim=3), result [B, S, H] -> permute to [B, H, S]
+    D_row = (dO_r.float() * O_r.float()).sum(dim=3).permute(0, 2, 1).contiguous()  # [B, H, S]
 
     dQ = torch.zeros_like(Q_r)
     dK1 = torch.zeros_like(K_r)
@@ -311,17 +320,27 @@ def backward(grad_output, x, Q, K, V, Kp, Vp, out_dim, num_heads, head_dim, w1=8
     dK2 = torch.zeros_like(Kp_r)
     dV2 = torch.zeros_like(Vp_r)
 
+    q_s = Q_r.stride()
+    k1_s = K_r.stride()
+    k2_s = Kp_r.stride()
+    v1_s = V_r.stride()
+    v2_s = Vp_r.stride()
+    do_s = dO_r.stride()
+    m_s = M_r.stride()
+    d_s = D_row.stride()
+    dq_s = dQ.stride()
+
     # Strides shared by both kernels
     shared_strides = {
-        "q_stride_b": Q_r.stride(0), "q_stride_s": Q_r.stride(1), "q_stride_k": Q_r.stride(2), "q_stride_h": Q_r.stride(3),
-        "k1_stride_b": K_r.stride(0), "k1_stride_s": K_r.stride(1), "k1_stride_k": K_r.stride(2), "k1_stride_h": K_r.stride(3),
-        "k2_stride_b": Kp_r.stride(0), "k2_stride_s": Kp_r.stride(1), "k2_stride_k": Kp_r.stride(2), "k2_stride_h": Kp_r.stride(3),
-        "v1_stride_b": V_r.stride(0), "v1_stride_s": V_r.stride(1), "v1_stride_k": V_r.stride(2), "v1_stride_h": V_r.stride(3),
-        "v2_stride_b": Vp_r.stride(0), "v2_stride_s": Vp_r.stride(1), "v2_stride_k": Vp_r.stride(2), "v2_stride_h": Vp_r.stride(3),
-        "dO_stride_b": dO_r.stride(0), "dO_stride_s": dO_r.stride(1), "dO_stride_k": dO_r.stride(2), "dO_stride_h": dO_r.stride(3),
-        "m_stride_b": 0, "m_stride_k": M_r.stride(1), "m_stride_s": M_r.stride(2),
-        "d_stride_b": 0, "d_stride_k": D_row.stride(1), "d_stride_s": D_row.stride(2),
-        "dq_stride_b": dQ.stride(0), "dq_stride_s": dQ.stride(1), "dq_stride_k": dQ.stride(2), "dq_stride_h": dQ.stride(3),
+        "q_stride_b": q_s[0], "q_stride_s": q_s[1], "q_stride_k": q_s[2], "q_stride_h": q_s[3],
+        "k1_stride_b": k1_s[0], "k1_stride_s": k1_s[1], "k1_stride_k": k1_s[2], "k1_stride_h": k1_s[3],
+        "k2_stride_b": k2_s[0], "k2_stride_s": k2_s[1], "k2_stride_k": k2_s[2], "k2_stride_h": k2_s[3],
+        "v1_stride_b": v1_s[0], "v1_stride_s": v1_s[1], "v1_stride_k": v1_s[2], "v1_stride_h": v1_s[3],
+        "v2_stride_b": v2_s[0], "v2_stride_s": v2_s[1], "v2_stride_k": v2_s[2], "v2_stride_h": v2_s[3],
+        "dO_stride_b": do_s[0], "dO_stride_s": do_s[1], "dO_stride_k": do_s[2], "dO_stride_h": do_s[3],
+        "m_stride_b": m_s[0], "m_stride_k": m_s[1], "m_stride_s": m_s[2],
+        "d_stride_b": d_s[0], "d_stride_k": d_s[1], "d_stride_s": d_s[2],
+        "dq_stride_b": dq_s[0], "dq_stride_s": dq_s[1], "dq_stride_k": dq_s[2], "dq_stride_h": dq_s[3],
     }
 
     # KV1-specific: dK1, dV1 strides
@@ -331,7 +350,7 @@ def backward(grad_output, x, Q, K, V, Kp, Vp, out_dim, num_heads, head_dim, w1=8
         "dv1_stride_b": dV1.stride(0), "dv1_stride_s": dV1.stride(1), "dv1_stride_k": dV1.stride(2), "dv1_stride_h": dV1.stride(3),
     }
 
-    # KV2Q-specific: dK2, dV2 strides (no dk1/dv1!)
+    # KV2Q-specific: dK2, dV2 strides
     strides_kv2 = {
         **shared_strides,
         "dk2_stride_b": dK2.stride(0), "dk2_stride_s": dK2.stride(1), "dk2_stride_k": dK2.stride(2), "dk2_stride_h": dK2.stride(3),
@@ -339,11 +358,11 @@ def backward(grad_output, x, Q, K, V, Kp, Vp, out_dim, num_heads, head_dim, w1=8
     }
 
     # Launch KV1 kernel
-    grid_kv1 = (triton.cdiv(N, 32), 1 * H)
+    grid_kv1 = (triton.cdiv(seq_len, 32), bs * num_heads)
     two_simplicial_attn_bwd_kv1_kernel[grid_kv1](
         Q_r, K_r, Kp_r, V_r, Vp_r, dO_r, M_r, D_row,
         dQ, dK1, dV1,
-        1, N, H, head_dim,
+        bs, seq_len, num_heads, head_dim,
         w1, w2,
         **strides_kv1,
         BLOCK_SIZE_Q=32, BLOCK_SIZE_KV=32, HEAD_DIM=head_dim, SM_SCALE=1.0 / (head_dim ** 0.5),
@@ -351,11 +370,11 @@ def backward(grad_output, x, Q, K, V, Kp, Vp, out_dim, num_heads, head_dim, w1=8
     )
 
     # Launch KV2Q kernel (Pass 1 then Pass 2)
-    grid_kv2q = (triton.cdiv(N, 64), 1 * H)
+    grid_kv2q = (triton.cdiv(seq_len, 64), bs * num_heads)
     two_simplicial_attn_bwd_kv2q_kernel[grid_kv2q](
         Q_r, K_r, Kp_r, V_r, Vp_r, dO_r, M_r, D_row,
         dQ, dK2, dV2,
-        1, N, H, head_dim,
+        bs, seq_len, num_heads, head_dim,
         w1, w2,
         **strides_kv2,
         HEAD_DIM=head_dim, SM_SCALE=1.0 / (head_dim ** 0.5), K2_BIAS=0.0, V2_BIAS=0.0, IS_SECOND_PASS=False
@@ -363,10 +382,12 @@ def backward(grad_output, x, Q, K, V, Kp, Vp, out_dim, num_heads, head_dim, w1=8
     two_simplicial_attn_bwd_kv2q_kernel[grid_kv2q](
         Q_r, K_r, Kp_r, V_r, Vp_r, dO_r, M_r, D_row,
         dQ, dK2, dV2,
-        1, N, H, head_dim,
+        bs, seq_len, num_heads, head_dim,
         w1, w2,
         **strides_kv2,
         HEAD_DIM=head_dim, SM_SCALE=1.0 / (head_dim ** 0.5), K2_BIAS=0.0, V2_BIAS=0.0, IS_SECOND_PASS=True
     )
 
-    return dQ.view(N, H, head_dim), dK1.view(N, H, head_dim), dV1.view(N, H, head_dim), dK2.view(N, H, head_dim), dV2.view(N, H, head_dim)
+    if Q.dim() == 3:
+        return dQ.view(seq_len, num_heads, head_dim), dK1.view(seq_len, num_heads, head_dim), dV1.view(seq_len, num_heads, head_dim), dK2.view(seq_len, num_heads, head_dim), dV2.view(seq_len, num_heads, head_dim)
+    return dQ, dK1, dV1, dK2, dV2

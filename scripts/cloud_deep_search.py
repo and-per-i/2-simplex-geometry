@@ -7,8 +7,9 @@ import multiprocessing as mp
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.parent.resolve()
-sys.path.insert(0, str(ROOT_DIR / "src/symbolic"))
-sys.path.insert(0, str(ROOT_DIR / "modello_distillato"))
+if __name__ == "__main__":
+    sys.path.insert(0, str(ROOT_DIR / "src/symbolic"))
+    sys.path.insert(0, str(ROOT_DIR / "modello_distillato"))
 
 from student_progressive import StudentModelProgressive
 from tokenizer.hf_tokenizer import load_tokenizer
@@ -199,7 +200,7 @@ def load_model(device):
     tok_path = ROOT_DIR / "modello_distillato" / "tokenizer" / "vocab.model"
     tok = load_tokenizer(str(tok_path), vocab_size=1024)
     model = StudentModelProgressive(vocab_size=1024, dim_hidden=384, num_layers=8, simplicial_layers=[3, 7])
-    model.load_state_dict(torch.load(model_path, map_location="cpu"))
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.to(device)
     if "cuda" in str(device) or "mps" in str(device): model.half()
     else: model.float()

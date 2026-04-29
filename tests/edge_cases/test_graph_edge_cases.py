@@ -14,7 +14,7 @@ def test_single_node_graph():
     tri_feats = torch.randn(1, in_dim)
     edge_index = torch.tensor([[-1]], dtype=torch.long)
 
-    out = model(tri_feats, edge_index)
+    out = model(tri_feats)
     assert out.shape == (1, out_dim)
     assert torch.isfinite(out).all()
 
@@ -35,7 +35,7 @@ def test_isolated_node_in_connected_graph():
         [-1, -1, -1],
     ], dtype=torch.long)
 
-    out = model(tri_feats, edge_index)
+    out = model(tri_feats)
     assert out.shape == (N, out_dim)
     assert torch.isfinite(out).all()
 
@@ -66,7 +66,7 @@ def test_degree_one_node_softmax_is_one():
         S = torch.softmax(scaled.reshape(-1), dim=0)
         assert torch.allclose(S, torch.tensor([1.0]), atol=1e-6)
 
-    out = model(tri_feats, edge_index)
+    out = model(tri_feats)
     assert out.shape == (N, out_dim)
     assert torch.isfinite(out).all()
 
@@ -82,7 +82,7 @@ def test_all_nodes_isolated():
     tri_feats = torch.randn(N, in_dim)
     edge_index = torch.full((N, 2), -1, dtype=torch.long)
 
-    out = model(tri_feats, edge_index)
+    out = model(tri_feats)
     assert out.shape == (N, out_dim)
     assert torch.isfinite(out).all()
 
@@ -104,6 +104,6 @@ def test_varying_degrees_in_same_graph():
         [3, -1, -1],
     ], dtype=torch.long)
 
-    out = model(tri_feats, edge_index)
+    out = model(tri_feats)
     assert out.shape == (N, out_dim)
     assert torch.isfinite(out).all()

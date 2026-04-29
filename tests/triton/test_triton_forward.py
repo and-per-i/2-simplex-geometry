@@ -1,9 +1,9 @@
-"""
+\"\"\"
 Tests for the Triton forward kernel (2-simplicial attention).
 
 These tests require Triton + CUDA GPU. They will be automatically skipped
 in local environments without GPU support. Run on a cloud GPU instance.
-"""
+\"\"\"
 import torch
 import pytest
 
@@ -11,7 +11,7 @@ from tests.triton.conftest import skip_no_triton
 
 
 def _pytorch_2s_ref(Q, K1, K2, V1, V2, w1, w2, sm_scale):
-    """PyTorch reference implementation of 2-simplicial attention (dense, no masking)."""
+    \"\"\"PyTorch reference implementation of 2-simplicial attention (dense, no masking).\"\"\"
     B, S, H, D = Q.shape
     scale = sm_scale
 
@@ -24,7 +24,7 @@ def _pytorch_2s_ref(Q, K1, K2, V1, V2, w1, w2, sm_scale):
                 q_i = Q[b, i, h].float()
                 num = 0.0
                 den = 0.0
-                max_score = float("-inf")
+                max_score = float(\"-inf\")
                 scores = []
                 for j in range(S):
                     if not (i - w1 < j <= i):
@@ -49,7 +49,7 @@ def _pytorch_2s_ref(Q, K1, K2, V1, V2, w1, w2, sm_scale):
                     M[b, h, i] = max_score + torch.log(torch.tensor(den, dtype=torch.float32, device=Q.device))
                 else:
                     O[b, i, h] = 0
-                    M[b, h, i] = float("-inf")
+                    M[b, h, i] = float(\"-inf\")
 
     return O, M
 
@@ -66,17 +66,26 @@ def _make_qkv(B, S, num_heads, head_dim, device, dtype=torch.bfloat16, seed=42):
 
 def _call_fwd_kernel(Q, K1, K2, V1, V2, w1, w2):
     from src.kernels.triton_2s_forward import _forward_kernel_call, _check_triton
-    assert _check_triton(), "Triton not available"
+    assert _check_triton(), \"Triton not available\"
 
     B, S, num_heads, head_dim = Q.shape
     O = torch.zeros_like(Q)
     M = torch.zeros(B, num_heads, S, dtype=torch.float32, device=Q.device)
 
+    strides = {
+        \"q_stride_b\": Q.stride(0), \"q_stride_s\": Q.stride(1), \"q_stride_h\": Q.stride(2), \"q_stride_k\": Q.stride(3),
+        \"k1_stride_b\": K1.stride(0), \"k1_stride_s\": K1.stride(1), \"k1_stride_h\": K1.stride(2), \"k1_stride_k\": K1.stride(3),
+        \"k2_stride_b\": K2.stride(0), \"k2_stride_s\": K2.stride(1), \"k2_stride_h\": K2.stride(2), \"k2_stride_k\": K2.stride(3),
+        \"v1_stride_b\": V1.stride(0), \"v1_stride_s\": V1.stride(1), \"v1_stride_h\": V1.stride(2), \"v1_stride_k\": V1.stride(3),
+        \"v2_stride_b\": V2.stride(0), \"v2_stride_s\": V2.stride(1), \"v2_stride_h\": V2.stride(2), \"v2_stride_k\": V2.stride(3),
+        \"o_stride_b\": O.stride(0), \"o_stride_s\": O.stride(1), \"o_stride_h\": O.stride(2), \"o_stride_k\": O.stride(3),
+        \"m_stride_b\": M.stride(0), \"m_stride_h\": M.stride(1), \"m_stride_s\": M.stride(2),
+    }
+
     _forward_kernel_call(
         Q, K1, K2, V1, V2, O, M,
         B, S, num_heads, head_dim, w1, w2,
-        *Q.stride(), *K1.stride(), *K2.stride(), *V1.stride(), *V2.stride(),
-        *O.stride(), *M.stride(),
+        strides
     )
     return O, M
 
@@ -94,8 +103,8 @@ class TestTritonForwardKernel:
         B, S, H, D = 1, 128, 4, 64
         Q, K1, K2, V1, V2 = _make_qkv(B, S, H, D, cuda_device)
         O, M = _call_fwd_kernel(Q, K1, K2, V1, V2, w1=S, w2=S)
-        assert torch.isfinite(O.float()).all(), "Output contains non-finite values"
-        assert torch.isfinite(M).all(), "Log-sum-exp contains non-finite values"
+        assert torch.isfinite(O.float()).all(), \"Output contains non-finite values\"
+        assert torch.isfinite(M).all(), \"Log-sum-exp contains non-finite values\"
 
     def test_output_finite_with_large_input(self, cuda_device):
         B, S, H, D = 1, 64, 2, 64

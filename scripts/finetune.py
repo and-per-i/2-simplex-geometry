@@ -73,25 +73,27 @@ def main():
                 old_prefix = f"model.layers.{i}.attention"
                 new_prefix = f"model.layers.{i}.attention.simplex_attn"
                 
-                for proj in ["q_proj", "k_proj", "v_proj"]:
-                    old_key = f"{old_prefix}.{proj}.weight"
-                    new_key = f"{new_prefix}.{proj}.weight"
-                    if old_key in state_dict and new_key in current_state:
-                        current_state[new_key].copy_(state_dict[old_key])
+                # Projections weights and biases
+                for proj in ["q_proj", "k_proj", "v_proj", "out_proj"]:
+                    for suffix in ["weight", "bias"]:
+                        old_key = f"{old_prefix}.{proj}.{suffix}"
+                        new_key = f"{new_prefix}.{proj}.{suffix}"
+                        if old_key in state_dict and new_key in current_state:
+                            current_state[new_key].copy_(state_dict[old_key])
                 
-                # For K' and V', initialize with K and V weights
+                # For K' and V', initialize with K and V weights/biases
                 if f"{old_prefix}.k_proj.weight" in state_dict:
                     current_state[f"{new_prefix}.kp_proj.weight"].copy_(state_dict[f"{old_prefix}.k_proj.weight"])
-                    current_state[f"{new_prefix}.vp_proj.weight"].copy_(state_dict[f"{old_prefix}.v_proj.weight"])
+                    if f"{old_prefix}.k_proj.bias" in state_dict:
+                         current_state[f"{new_prefix}.kp_proj.bias"].copy_(state_dict[f"{old_prefix}.k_proj.bias"])
                 
-                # Output projection
-                if f"{old_prefix}.out_proj.weight" in state_dict:
-                    current_state[f"{new_prefix}.out_proj.weight"].copy_(state_dict[f"{old_prefix}.out_proj.weight"])
-                    if f"{old_prefix}.out_proj.bias" in state_dict:
-                        current_state[f"{new_prefix}.out_proj.bias"].copy_(state_dict[f"{old_prefix}.out_proj.bias"])
+                if f"{old_prefix}.v_proj.weight" in state_dict:
+                    current_state[f"{new_prefix}.vp_proj.weight"].copy_(state_dict[f"{old_prefix}.v_proj.weight"])
+                    if f"{old_prefix}.v_proj.bias" in state_dict:
+                         current_state[f"{new_prefix}.vp_proj.bias"].copy_(state_dict[f"{old_prefix}.v_proj.bias"])
 
             model.load_state_dict(current_state)
-            print("✅ Weight mapping completed.")
+            print("✅ Weight mapping completed (including biases).")
     
     print(f"✅ Model loaded. Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
@@ -117,6 +119,9 @@ def main():
             padded_seqs = []
             for f in features:
                 seq = f[key]
+                if isinstance(seq, torch.Tensor):
+                    seq = seq.tolist()
+                
                 # Pad with 0 for input_ids/mask, and -100 for labels
                 pad_val = 0 if key != "labels" else -100
                 padded = seq + [pad_val] * (max_len - len(seq))
@@ -124,6 +129,7 @@ def main():
             batch[key] = torch.tensor(padded_seqs, dtype=torch.long)
         
         return batch
+
 
     # 5. Training Arguments - Optimized for 5090 (32GB VRAM)
     training_args = TrainingArguments(

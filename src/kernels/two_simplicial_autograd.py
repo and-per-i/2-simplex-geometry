@@ -31,15 +31,16 @@ class TwoSimplicialAttentionFunction(torch.autograd.Function):
         """Backward pass."""
         Q, K, V, Kp, Vp, M, O, x = ctx.saved_tensors
         
-        # The backward kernel expects layout [N, H, D] or similar
-        # Our triton_2s_backward.backward returns (dQ, dK, dV, dKp, dVp)
+        # The backward kernel now accepts O and M to avoid recomputing forward
         dQ, dK, dV, dKp, dVp = triton_2s_backward.backward(
             grad_output,
             x,
             Q, K, V, Kp, Vp,
+            O, M,
             ctx.out_dim, ctx.num_heads, ctx.head_dim,
             ctx.w1, ctx.w2
         )
+
         
         return (
             None, # x

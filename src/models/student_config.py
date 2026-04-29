@@ -44,6 +44,7 @@ class StudentConfig(PretrainedConfig):
         max_position_embeddings: int = 1024,
         dropout_prob: float = 0.1,
         use_simplex_attention: bool = False,
+        use_triton: bool = True,
         w1: int = 8,
         w2: int = 8,
         initializer_range: float = 0.02,
@@ -69,6 +70,7 @@ class StudentConfig(PretrainedConfig):
         self.max_position_embeddings = max_position_embeddings
         self.dropout_prob = dropout_prob
         self.use_simplex_attention = use_simplex_attention
+        self.use_triton = use_triton
         self.w1 = w1
         self.w2 = w2
         self.initializer_range = initializer_range
@@ -81,6 +83,7 @@ class StudentConfig(PretrainedConfig):
             tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
+
 
     @property
     def head_dim(self) -> int:

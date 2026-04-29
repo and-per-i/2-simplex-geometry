@@ -160,62 +160,71 @@ if _check_triton():
     # ---------------------------------------------------------------------------
     # Internal launcher
     # ---------------------------------------------------------------------------
-    def _forward_kernel_call(Q, K1, K2, V1, V2, O, M, bs, seq_len, num_heads, head_dim, w1, w2, *args, **kwargs):
+    def _forward_kernel_call(Q, K1, K2, V1, V2, O, M, bs, seq_len, num_heads, head_dim, w1, w2, strides):
         grid = (triton.cdiv(seq_len, 64), bs * num_heads)
         
-        # If strides are passed as positional arguments (from tests)
-        if len(args) > 0:
-            two_simplicial_attn_fwd_kernel[grid](
-                Q, K1, K2, V1, V2, O, M,
-                bs, seq_len, num_heads, head_dim, w1, w2,
-                *args,
-                HEAD_DIM=head_dim,
-                INPUT_PRECISION="tf32",
-                SM_SCALE=1.0 / (head_dim ** 0.5),
-                K2_BIAS=0.0, V2_BIAS=0.0,
-            )
-        else:
-            # Called from forward() with a dictionary of strides
-            actual_strides = kwargs.pop('strides', {})
-            two_simplicial_attn_fwd_kernel[grid](
-                Q, K1, K2, V1, V2, O, M,
-                bs, seq_len, num_heads, head_dim, w1, w2,
-                **actual_strides,
-                **kwargs,
-                HEAD_DIM=head_dim,
-                INPUT_PRECISION="tf32",
-                SM_SCALE=1.0 / (head_dim ** 0.5),
-                K2_BIAS=0.0, V2_BIAS=0.0,
-            )
+        two_simplicial_attn_fwd_kernel[grid](
+            Q, K1, K2, V1, V2, O, M,
+            bs, seq_len, num_heads, head_dim, w1, w2,
+            **strides,
+            HEAD_DIM=head_dim,
+            INPUT_PRECISION="tf32",
+            SM_SCALE=1.0 / (head_dim ** 0.5),
+            K2_BIAS=0.0, V2_BIAS=0.0,
+        )
 
 
 def forward(x, Q, K, V, Kp, Vp, out_dim, num_heads, head_dim, w1=8, w2=8):
     if not _check_triton():
         raise RuntimeError("Triton is not available in this environment.")
 
-    N = x.size(0)
-    H = num_heads
-    D = head_dim
+    # Validation
+    for t in [Q, K, V, Kp, Vp]:
+        if not t.is_cuda:
+            raise ValueError("All input tensors must be on CUDA for Triton kernels.")
+        if t.dtype not in [torch.float16, torch.bfloat16, torch.float32]:
+            raise ValueError(f"Unsupported dtype {t.dtype} for Triton kernel.")
 
-    Q_r  = Q.view(1, N, H, D).contiguous()
-    K_r  = K.view(1, N, H, D).contiguous()
-    V_r  = V.view(1, N, H, D).contiguous()
-    Kp_r = Kp.view(1, N, H, D).contiguous()
-    Vp_r = Vp.view(1, N, H, D).contiguous()
+    # Handle both (N, H, D) and (B, S, H, D) inputs
 
-    O = torch.empty((1, N, H, D), device=x.device, dtype=x.dtype)
-    M = torch.empty((1, H, N),    device=x.device, dtype=x.dtype)
+    if Q.dim() == 3:
+        # N, H, D
+        N = Q.size(0)
+        bs = 1
+        seq_len = N
+        Q_r  = Q.view(bs, seq_len, num_heads, head_dim).contiguous()
+        K_r  = K.view(bs, seq_len, num_heads, head_dim).contiguous()
+        V_r  = V.view(bs, seq_len, num_heads, head_dim).contiguous()
+        Kp_r = Kp.view(bs, seq_len, num_heads, head_dim).contiguous()
+        Vp_r = Vp.view(bs, seq_len, num_heads, head_dim).contiguous()
+    else:
+        # B, S, H, D
+        bs, seq_len, _, _ = Q.shape
+        Q_r, K_r, V_r, Kp_r, Vp_r = Q.contiguous(), K.contiguous(), V.contiguous(), Kp.contiguous(), Vp.contiguous()
 
-    q_stride_b, q_stride_s, q_stride_k, q_stride_h = Q_r.stride()
+    O = torch.empty((bs, seq_len, num_heads, head_dim), device=x.device, dtype=x.dtype)
+    M = torch.empty((bs, num_heads, seq_len),    device=x.device, dtype=torch.float32)
+
+    q_s = Q_r.stride()
+    k1_s = K_r.stride()
+    k2_s = Kp_r.stride()
+    v1_s = V_r.stride()
+    v2_s = Vp_r.stride()
+    o_s = O.stride()
+    m_s = M.stride()
+
     strides = {
-        "q_stride_b": q_stride_b, "q_stride_s": q_stride_s, "q_stride_k": q_stride_k, "q_stride_h": q_stride_h,
-        "k1_stride_b": q_stride_b, "k1_stride_s": q_stride_s, "k1_stride_k": q_stride_k, "k1_stride_h": q_stride_h,
-        "k2_stride_b": q_stride_b, "k2_stride_s": q_stride_s, "k2_stride_k": q_stride_k, "k2_stride_h": q_stride_h,
-        "v1_stride_b": q_stride_b, "v1_stride_s": q_stride_s, "v1_stride_k": q_stride_k, "v1_stride_h": q_stride_h,
-        "v2_stride_b": q_stride_b, "v2_stride_s": q_stride_s, "v2_stride_k": q_stride_k, "v2_stride_h": q_stride_h,
-        "out_stride_b": q_stride_b, "out_stride_s": q_stride_s, "out_stride_k": q_stride_k, "out_stride_h": q_stride_h,
-        "m_stride_b": 0, "m_stride_k": M.stride()[1], "m_stride_s": M.stride()[2],
+        "q_stride_b": q_s[0], "q_stride_s": q_s[1], "q_stride_k": q_s[2], "q_stride_h": q_s[3],
+        "k1_stride_b": k1_s[0], "k1_stride_s": k1_s[1], "k1_stride_k": k1_s[2], "k1_stride_h": k1_s[3],
+        "k2_stride_b": k2_s[0], "k2_stride_s": k2_s[1], "k2_stride_k": k2_s[2], "k2_stride_h": k2_s[3],
+        "v1_stride_b": v1_s[0], "v1_stride_s": v1_s[1], "v1_stride_k": v1_s[2], "v1_stride_h": v1_s[3],
+        "v2_stride_b": v2_s[0], "v2_stride_s": v2_s[1], "v2_stride_k": v2_s[2], "v2_stride_h": v2_s[3],
+        "out_stride_b": o_s[0], "out_stride_s": o_s[1], "out_stride_k": o_s[2], "out_stride_h": o_s[3],
+        "m_stride_b": m_s[0], "m_stride_k": m_s[1], "m_stride_s": m_s[2],
     }
 
-    _forward_kernel_call(Q_r, K_r, Kp_r, V_r, Vp_r, O, M, 1, N, H, D, w1=w1, w2=w2, strides=strides)
-    return O.view(N, -1), M.view(N, H)
+    _forward_kernel_call(Q_r, K_r, Kp_r, V_r, Vp_r, O, M, bs, seq_len, num_heads, head_dim, w1=w1, w2=w2, strides=strides)
+    
+    if Q.dim() == 3:
+        return O.view(seq_len, -1), M.view(num_heads, seq_len)
+    return O, M

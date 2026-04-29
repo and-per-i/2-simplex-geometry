@@ -84,7 +84,9 @@ class StudentAttention(nn.Module):
                 out_dim=config.hidden_size,
                 num_heads=config.num_attention_heads,
                 dropout=config.dropout_prob,
-                use_triton_kernel=config.use_simplex_attention,
+                use_triton_kernel=getattr(config, "use_triton", True),
+                with_residual=False, # Handled by StudentTransformerLayer
+                with_norm=False,     # Handled by StudentTransformerLayer
                 w1=config.w1,
                 w2=config.w2
             )
@@ -103,15 +105,9 @@ class StudentAttention(nn.Module):
         B, S, _ = hidden_states.shape
 
         if self.use_simplex_attention:
-            # Il modulo 2-Simplicial gestisce ora la sliding window internamente
-            # Nota: Al momento ottimizzato per B=1
-            if B > 1:
-                # Fallback o loop per batch > 1 se necessario
-                outs = []
-                for b in range(B):
-                    outs.append(self.simplex_attn(hidden_states[b]))
-                return torch.stack(outs)
-            return self.simplex_attn(hidden_states[0]).unsqueeze(0)
+            # Il modulo 2-Simplicial gestisce ora la sliding window e il batch dimension internamente
+            return self.simplex_attn(hidden_states)
+
 
         def split_heads(x: torch.Tensor) -> torch.Tensor:
             # (B, S, H) → (B, num_heads, S, head_dim)

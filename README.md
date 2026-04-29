@@ -12,8 +12,9 @@ Tokens in a sequence (e.g., geometric primitives, proof steps) naturally form 2-
 
 - **Sliding Window 2-Simplicial Attention**: Trilinear attention over local temporal/spatial windows.
 - **AlphaGeometry Optimized**: Designed to capture geometric relations (like `cong a b c d`) through sequence locality.
-- **Triton Kernels**: Fully functional, ultra-fast Forward and Backward kernels.
-- **Mathematical Parity**: Rigorously validated against PyTorch reference implementations.
+- **Triton GPU Kernels**: Ultra-fast Forward and Backward kernels optimized for TF32/BF16.
+- **Strictly Causal**: Guaranteed zero future-token leakage during autoregressive training.
+- **Native Batched Support**: Supports `Batch Size > 1` in all paths (Triton and PyTorch).
 - **Vanilla PyTorch fallback**: Transparent fallback to standard PyTorch for CPU or non-Triton environments.
 
 ## Project Structure
@@ -118,13 +119,15 @@ The system pairs the neural intuition of our **2-Simplicial Transformer** with t
 
 ## Status
 
-- [x] Sliding Window 2-Simplicial Attention (PyTorch)
-- [x] Optimized Triton Forward Kernel (Sliding Window)
-- [x] Optimized Triton Backward Kernel (Sliding Window)
-- [x] Numerical Validation (CUDA)
-- [x] AlphaGeometry Distillation Pipeline (Fine-Tuning started)
-- [x] Large Scale Geometric Dataset Balancing (2M samples)
-- [x] Batched Generation & Inference Support
+- [x] Sliding Window 2-Simplicial Attention (PyTorch & Triton)
+- [x] Optimized Triton Forward & Backward Kernels (Sliding Window)
+- [x] Strictly Causal Sliding Window (Zero future-token leakage)
+- [x] Native Multi-Batch Training Support (B > 1)
+- [x] Optimized Backward Pass (Recompute-free)
+- [x] HF-Compatible Tokenizer & Trainer Integration
+- [x] Stable AlphaGeometry Distillation Pipeline
+- [x] Human-Readable Geometry Translator
+- [x] Batched Generation & Beam Search Inference Support
 - [x] Newclid / DDARN Symbolic Engine Integration
 - [x] Deep Test-Time Compute Beam Search (Multi-processing CPU)
 

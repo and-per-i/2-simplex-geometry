@@ -68,12 +68,19 @@ def _call_fwd_kernel(Q, K1, K2, V1, V2, w1, w2):
     B, S, H, D = Q.shape
     O = torch.zeros_like(Q)
     M = torch.zeros(B, H, S, dtype=torch.float32, device=Q.device)
+    strides = {
+        "q_stride_b": Q.stride(0), "q_stride_s": Q.stride(1), "q_stride_h": Q.stride(2), "q_stride_k": Q.stride(3),
+        "k1_stride_b": K1.stride(0), "k1_stride_s": K1.stride(1), "k1_stride_h": K1.stride(2), "k1_stride_k": K1.stride(3),
+        "k2_stride_b": K2.stride(0), "k2_stride_s": K2.stride(1), "k2_stride_h": K2.stride(2), "k2_stride_k": K2.stride(3),
+        "v1_stride_b": V1.stride(0), "v1_stride_s": V1.stride(1), "v1_stride_h": V1.stride(2), "v1_stride_k": V1.stride(3),
+        "v2_stride_b": V2.stride(0), "v2_stride_s": V2.stride(1), "v2_stride_h": V2.stride(2), "v2_stride_k": V2.stride(3),
+        "o_stride_b": O.stride(0), "o_stride_s": O.stride(1), "o_stride_h": O.stride(2), "o_stride_k": O.stride(3),
+        "m_stride_b": M.stride(0), "m_stride_h": M.stride(1), "m_stride_s": M.stride(2),
+    }
     _forward_kernel_call(
         Q, K1, K2, V1, V2, O, M,
         B, S, H, D, w1, w2,
-        *Q.stride(), *K1.stride(), *K2.stride(),
-        *V1.stride(), *V2.stride(),
-        *O.stride(), *M.stride(),
+        strides
     )
     return O, M
 

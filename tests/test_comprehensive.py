@@ -106,7 +106,7 @@ def test_triton_autograd_interface():
     except RuntimeError as e:
         assert "Triton" in str(e)
     except Exception as e:
-        pass
+        pytest.fail(f"Triton toggle test failed with error: {e}")
 
 def test_residual_toggle():
     """Check that residual connection is indeed optional."""

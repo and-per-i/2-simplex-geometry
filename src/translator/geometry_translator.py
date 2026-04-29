@@ -86,9 +86,9 @@ class GeometryTranslator:
         "peq": "≅",
         "pem": "⟂",
         "ratio": "Ratio",
-        "prop": "Proposition",
-        "coll": "Collinear"
+        "prop": "Proposition"
     }
+
 
     def __init__(self):
         self.point_map = {}
@@ -161,7 +161,8 @@ class GeometryTranslator:
         clean_solution = re.sub(r'[^a-z0-9\s;:\?=\-\+]', ' ', processed_raw)
         
         # Tokenize (updated to handle more patterns)
-        raw_tokens = re.findall(r'r[0-9]+|[a-z]+|[0-9]+|;|:|\?|=', clean_solution)
+        raw_tokens = re.findall(r'r\d+|[a-z]+|\d+|;|:|\?|=', clean_solution)
+
         
         translated_tokens = []
         for t in raw_tokens:
