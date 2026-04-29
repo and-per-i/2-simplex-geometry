@@ -75,8 +75,9 @@ class TwoSimplicialAttention(nn.Module):
                 Z = TwoSimplicialAttentionFunction.apply(
                     x, Q, K, V, Kp, Vp, self.out_dim, self.num_heads, self.head_dim, self.w1, self.w2
                 )
-            except Exception:
+            except Exception as e:
                 # Robust fallback for any Triton/CUDA error (OOM, shape mismatch, etc.)
+                print(f"⚠️ [TwoSimplicialAttention] Triton kernel failed, falling back to PyTorch: {e}")
                 Z = self._forward_pytorch(Q, K, V, Kp, Vp)
         else:
             Z = self._forward_pytorch(Q, K, V, Kp, Vp)

@@ -85,7 +85,7 @@ if _check_triton():
         dv1 = tl.zeros((BLOCK_SIZE_KV, HEAD_DIM), compute_dtype)
         dk1 = tl.zeros((BLOCK_SIZE_KV, HEAD_DIM), compute_dtype)
 
-        for kv2_idx in tl.range(tl.maximum(0, kv1_start - w2), tl.minimum(seq_len, kv1_end + w1)):
+        for kv2_idx in tl.range(tl.maximum(0, kv1_start - w2 - w1), tl.minimum(seq_len, kv1_end + w2)):
             k2_offs = kv2_idx * k2_stride_s + qkv_offs_h * k2_stride_h
             k2_tile = (tl.load(K2_ptr + k2_offs, mask=qkv_mask_h).to(compute_dtype))[None, :]
             v2_offs = kv2_idx * v2_stride_s + qkv_offs_h * v2_stride_h
@@ -183,8 +183,8 @@ if _check_triton():
 
         q_start = tl.program_id(0) * BLOCK_SIZE_KV2
         if IS_SECOND_PASS:
-            q_start += BLOCK_SIZE_Q
-        q_end = q_start + BLOCK_SIZE_Q
+            q_start += (BLOCK_SIZE_KV2 // 2)
+        q_end = q_start + (BLOCK_SIZE_KV2 // 2)
         kv2_start = q_start - w2
 
         bk = tl.program_id(1)
@@ -209,7 +209,7 @@ if _check_triton():
         qkv_offs_h = tl.arange(0, HEAD_DIM)
         qkv_mask_h = qkv_offs_h < head_dim
 
-        q_offs_s = q_start + tl.arange(0, BLOCK_SIZE_Q)
+        q_offs_s = q_start + tl.arange(0, BLOCK_SIZE_KV2 // 2)
         kv2_offs_s = kv2_start + tl.arange(0, BLOCK_SIZE_KV2)
         q_offs = q_offs_s[:, None] * q_stride_s + qkv_offs_h[None, :] * q_stride_h
         kv2_offs = kv2_offs_s[:, None] * k2_stride_s + qkv_offs_h[None, :] * k2_stride_h
@@ -233,7 +233,7 @@ if _check_triton():
         k2_tile = k2_tile.to(gemm_dtype)
         v2_tile = v2_tile.to(gemm_dtype)
 
-        dq = tl.zeros((BLOCK_SIZE_Q, HEAD_DIM), tl.float32)
+        dq = tl.zeros((BLOCK_SIZE_KV2 // 2, HEAD_DIM), tl.float32)
         dk2 = tl.zeros((BLOCK_SIZE_KV2, HEAD_DIM), tl.float32)
         dv2 = tl.zeros((BLOCK_SIZE_KV2, HEAD_DIM), tl.float32)
 
@@ -370,13 +370,17 @@ def backward(grad_output, x, Q, K, V, Kp, Vp, O, M, out_dim, num_heads, head_dim
     )
 
     # Launch KV2Q kernel (Pass 1 then Pass 2)
-    grid_kv2q = (triton.cdiv(seq_len, 64), bs * num_heads)
+    # We use BLOCK_SIZE_KV2 = 64 and BLOCK_SIZE_Q = 32
+    # The grid covers seq_len / 64 blocks, each block handles 64 queries in two passes
+    BLOCK_SIZE_KV2 = 64
+    grid_kv2q = (triton.cdiv(seq_len, BLOCK_SIZE_KV2), bs * num_heads)
     two_simplicial_attn_bwd_kv2q_kernel[grid_kv2q](
         Q_r, K_r, Kp_r, V_r, Vp_r, dO_r, M_r, D_row,
         dQ, dK2, dV2,
         bs, seq_len, num_heads, head_dim,
         w1, w2,
         **strides_kv2,
+        BLOCK_SIZE_Q=32, BLOCK_SIZE_KV2=64,
         HEAD_DIM=head_dim, SM_SCALE=1.0 / (head_dim ** 0.5), K2_BIAS=0.0, V2_BIAS=0.0, IS_SECOND_PASS=False
     )
     two_simplicial_attn_bwd_kv2q_kernel[grid_kv2q](
@@ -385,6 +389,7 @@ def backward(grad_output, x, Q, K, V, Kp, Vp, O, M, out_dim, num_heads, head_dim
         bs, seq_len, num_heads, head_dim,
         w1, w2,
         **strides_kv2,
+        BLOCK_SIZE_Q=32, BLOCK_SIZE_KV2=64,
         HEAD_DIM=head_dim, SM_SCALE=1.0 / (head_dim ** 0.5), K2_BIAS=0.0, V2_BIAS=0.0, IS_SECOND_PASS=True
     )
 

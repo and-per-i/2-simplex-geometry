@@ -8,10 +8,12 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.parent.resolve()
 if __name__ == "__main__":
+    sys.path.insert(0, str(ROOT_DIR))
     sys.path.insert(0, str(ROOT_DIR / "src/symbolic"))
     sys.path.insert(0, str(ROOT_DIR / "modello_distillato"))
 
-from student_progressive import StudentModelProgressive
+from src.models.student_model import StudentForCausalLM
+from src.models.student_config import StudentConfig
 from tokenizer.hf_tokenizer import load_tokenizer
 from newclid.api import GeometricSolverBuilder, PythonDefault
 from newclid.jgex.formulation import JGEXFormulation
@@ -197,9 +199,20 @@ def append_suggestion_to_prompt(prompt, sugg):
 
 def load_model(device):
     model_path = ROOT_DIR / "runs" / "finetune_clean" / "pytorch_model_finetuned.bin"
-    tok_path = ROOT_DIR / "modello_distillato" / "tokenizer" / "vocab.model"
+    # Unified tokenizer path
+    tok_path = ROOT_DIR / "tokenizer" / "weights" / "geometry.757.model"
     tok = load_tokenizer(str(tok_path), vocab_size=1024)
-    model = StudentModelProgressive(vocab_size=1024, dim_hidden=384, num_layers=8, simplicial_layers=[3, 7])
+    
+    # Real 2-Simplicial Model
+    config = StudentConfig(
+        vocab_size=1024, 
+        hidden_size=512, 
+        num_hidden_layers=6, 
+        use_simplex_attention=True,
+        w1=8,
+        w2=8
+    )
+    model = StudentForCausalLM(config)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.to(device)
     if "cuda" in str(device) or "mps" in str(device): model.half()
@@ -297,7 +310,7 @@ def main():
             break # L'utente voleva risolverne ALMENO UNA. Se la risolviamo, festeggiamo e fermiamo.
             
     if solved_count == 0:
-        print("\nNessun problema risolto in questa run limitata (Depth=2).")
+        print(f"\nNessun problema risolto in questa run limitata (Max Depth={3}).")
 
 if __name__ == "__main__":
     main()

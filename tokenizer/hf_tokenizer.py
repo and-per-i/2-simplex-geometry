@@ -86,7 +86,7 @@ class AlphaGeometryHFTokenizer(PreTrainedTokenizer):
     @property
     def semicolon_id(self) -> int:
         """Token ID per il semicolon (;), usato come EOS marker in geometria."""
-        return 263  # Verificato da pt_ckpt/vocab.model
+        return self.sp_model.PieceToId("▁;")
 
     def get_vocab(self) -> Dict[str, int]:
         vocab = {}

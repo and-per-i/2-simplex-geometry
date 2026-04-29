@@ -45,7 +45,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from student_progressive import StudentModelProgressive
 
 # ─── Aggiungi il tokenizer dal path corretto ───────────────────────────────────
-TOKENIZER_PATH = str(SCRIPT_DIR / "tokenizer" / "vocab.model")
+TOKENIZER_PATH = str(SCRIPT_DIR.parent / "tokenizer" / "weights" / "geometry.757.model")
 sys.path.insert(0, str(SCRIPT_DIR))
 from tokenizer.hf_tokenizer import load_tokenizer
 
@@ -204,7 +204,7 @@ def main():
         num_layers=8,
         simplicial_layers=[3, 7],
     )
-    state_dict = torch.load(args.model_path, map_location="cpu")
+    state_dict = torch.load(args.model_path, map_location="cpu", weights_only=True)
     model.load_state_dict(state_dict)
 
     bypassed = [i + 1 for i, l in enumerate(model.layers) if l.is_bypassed]

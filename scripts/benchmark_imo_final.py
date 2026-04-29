@@ -7,10 +7,12 @@ from pathlib import Path
 
 # Paths
 ROOT_DIR = Path(__file__).parent.parent.resolve()
+sys.path.insert(0, str(ROOT_DIR))
 sys.path.insert(0, str(ROOT_DIR / "src/symbolic"))
 sys.path.insert(0, str(ROOT_DIR / "modello_distillato"))
 
-from student_progressive import StudentModelProgressive
+from src.models.student_model import StudentForCausalLM
+from src.models.student_config import StudentConfig
 from tokenizer.hf_tokenizer import load_tokenizer
 from newclid.api import GeometricSolverBuilder, PythonDefault
 from newclid.jgex.formulation import JGEXFormulation
@@ -179,12 +181,21 @@ def main():
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     
     model_path = ROOT_DIR / "runs" / "finetune_clean" / "pytorch_model_finetuned.bin"
-    tok_path = ROOT_DIR / "modello_distillato" / "tokenizer" / "vocab.model"
+    # Unified tokenizer path
+    tok_path = ROOT_DIR / "tokenizer" / "weights" / "geometry.757.model"
 
     print("📦 Inizializzazione acceleratori Metal (FP16)...")
     tok = load_tokenizer(str(tok_path), vocab_size=1024)
-    model = StudentModelProgressive(vocab_size=1024, dim_hidden=384, num_layers=8, simplicial_layers=[3, 7])
-    model.load_state_dict(torch.load(model_path, map_location="cpu"))
+    config = StudentConfig(
+        vocab_size=1024, 
+        hidden_size=512, 
+        num_hidden_layers=6, 
+        use_simplex_attention=True,
+        w1=8,
+        w2=8
+    )
+    model = StudentForCausalLM(config)
+    model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
     model = optimize_for_m4(model, device)
 
     trans_dir = ROOT_DIR / "imo_translated"

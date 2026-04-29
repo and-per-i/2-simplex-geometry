@@ -112,11 +112,13 @@ def run_curriculum():
 
     if os.path.exists(checkpoint_root):
         all_checkpoints = []
-        for root, dirs, files in os.walk(checkpoint_root):
-            for d in dirs:
-                if d.startswith("checkpoint-"):
-                    full_path = os.path.join(root, d)
-                    all_checkpoints.append(full_path)
+        # Check one level deep: checkpoints/*/checkpoint-*
+        for stage_dir in os.listdir(checkpoint_root):
+            stage_path = os.path.join(checkpoint_root, stage_dir)
+            if os.path.isdir(stage_path):
+                for d in os.listdir(stage_path):
+                    if d.startswith("checkpoint-"):
+                        all_checkpoints.append(os.path.join(stage_path, d))
         
         if all_checkpoints:
             # Prende il checkpoint più recente basato sulla data di modifica

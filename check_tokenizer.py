@@ -29,7 +29,7 @@ except ImportError as e:
 # ─────────────────────────────────────────────────────────────
 # 2. Caricamento
 # ─────────────────────────────────────────────────────────────
-VOCAB_MODEL_PATH = "modello_distillato/tokenizer/vocab.model"
+VOCAB_MODEL_PATH = "tokenizer/weights/geometry.757.model"
 
 try:
     tok = load_tokenizer(VOCAB_MODEL_PATH, vocab_size=1024)

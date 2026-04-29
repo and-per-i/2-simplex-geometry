@@ -62,7 +62,7 @@ class System1Dataset(Dataset):
                 for i, target_construction in enumerate(raw_constructions):
                     # Identify the point introduced in THIS construction
                     # e.g. "j : coll e g j [011]" -> point is "j"
-                    point_match = re.search(r"(\w)\s:", target_construction)
+                    point_match = re.search(r"(\w+)\s:", target_construction)
                     if not point_match: continue
                     target_point = point_match.group(1)
                     
