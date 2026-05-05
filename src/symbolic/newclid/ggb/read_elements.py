@@ -2,7 +2,8 @@ from enum import Enum
 from typing import Annotated, Literal
 from xml.etree.ElementTree import Element
 
-from pydantic import BaseModel, Field
+from newclid._base_model import NewclidModel as BaseModel
+from pydantic import Field
 
 from newclid.numerical.geometries import PointNum
 from newclid.predicate_types import PredicateArgument

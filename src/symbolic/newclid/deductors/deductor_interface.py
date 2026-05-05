@@ -4,7 +4,8 @@ from abc import ABC, abstractmethod
 from fractions import Fraction
 from typing import TYPE_CHECKING, Iterator, Literal, Self
 
-from pydantic import BaseModel, model_validator
+from newclid._base_model import NewclidModel as BaseModel
+from pydantic import model_validator
 
 from newclid.deductors import ARReason
 from newclid.justifications._index import JustificationType

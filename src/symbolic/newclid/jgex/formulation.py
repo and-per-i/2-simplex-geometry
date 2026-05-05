@@ -6,7 +6,7 @@ import string
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 from newclid.jgex.clause import JGEXClause
 from newclid.predicate_types import PredicateArgument

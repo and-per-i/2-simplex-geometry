@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any, Iterable, Optional, Self, Union
 
 import numpy as np
-from pydantic import BaseModel, model_validator
+from newclid._base_model import NewclidModel as BaseModel
+from pydantic import model_validator
 
 from newclid.numerical import close_enough, nearly_zero, sign
 

@@ -5,7 +5,7 @@ from typing import Any, Iterable, Optional, Sequence, Union
 
 import numpy as np
 from numpy.random import Generator
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 from newclid.jgex.errors import (
     InvalidIntersectError,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from fractions import Fraction
 
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 from newclid.deductors.deductor_interface import ARDeduction, ARPremise
 from newclid.justifications._index import JustificationType

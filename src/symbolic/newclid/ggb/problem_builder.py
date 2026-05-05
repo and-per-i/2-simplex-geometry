@@ -4,7 +4,7 @@ from typing import Self
 from xml.etree.ElementTree import parse
 from zipfile import ZipFile
 
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 from newclid.api import ProblemBuilder
 from newclid.ggb.apply_commands_effects import apply_commands_effects_on_elements

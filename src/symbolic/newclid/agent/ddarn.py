@@ -7,7 +7,7 @@ import time
 from collections import defaultdict, deque
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 from newclid.agent.agents_interface import DeductiveAgent
 from newclid.predicates._index import PredicateType

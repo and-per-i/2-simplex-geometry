@@ -1,7 +1,7 @@
 import itertools
 from typing import Iterable
 
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 from newclid.jgex.constructions.free import FREE_CONSTRUCTIONS
 from newclid.jgex.formulation import JGEXFormulation

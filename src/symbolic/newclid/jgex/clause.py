@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict
+from newclid._base_model import NewclidModel as BaseModel
+from pydantic import ConfigDict
 
 from newclid.predicate_types import PredicateArgument
 from newclid.tools import atomize, point_construction_tuple

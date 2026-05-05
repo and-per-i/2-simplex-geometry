@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 if TYPE_CHECKING:
     from newclid.predicate_types import PredicateArgument

@@ -2,7 +2,7 @@ import logging
 from typing import Literal
 
 import numpy as np
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 from newclid.heuristics._index import HeuristicName
 from newclid.heuristics._interface import Heuristic, HeuristicSetup

@@ -1,7 +1,8 @@
 from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from newclid._base_model import NewclidModel as BaseModel
+from pydantic import Field
 
 from newclid.ggb.read_elements import GGBConic, GGBLine, GGBPoint
 

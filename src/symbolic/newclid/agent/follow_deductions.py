@@ -5,7 +5,8 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import TYPE_CHECKING, Annotated, Literal
 
-from pydantic import BaseModel, Field
+from newclid._base_model import NewclidModel as BaseModel
+from pydantic import Field
 
 from newclid.agent.agents_interface import DeductiveAgent
 from newclid.deductors import ARReason

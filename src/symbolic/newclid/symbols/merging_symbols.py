@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Generic, Self, TypeVar
 
-from pydantic import BaseModel, model_validator
+from newclid._base_model import NewclidModel as BaseModel
+from pydantic import model_validator
 
 S = TypeVar("S")
 

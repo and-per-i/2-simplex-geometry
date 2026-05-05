@@ -1,7 +1,8 @@
 from enum import Enum
 from typing import Annotated
 
-from pydantic import BaseModel, Field
+from newclid._base_model import NewclidModel as BaseModel
+from pydantic import Field
 from pydantic_core import Url
 
 from newclid.jgex.formulation import JGEXFormulation

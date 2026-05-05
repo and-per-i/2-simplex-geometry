@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from matplotlib.artist import Artist
 from matplotlib.axes import Axes
 from matplotlib.typing import ColorType
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 from newclid.animation.artists_in_animation import ArtistInAnimation, PointArtists
 from newclid.draw.ar_application import draw_ar_application

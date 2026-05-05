@@ -6,7 +6,7 @@ import re
 from typing import Self
 
 import numpy as np
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 from newclid.api import GeometricSolverBuilder
 from newclid.jgex.clause import JGEXClause, JGEXConstruction

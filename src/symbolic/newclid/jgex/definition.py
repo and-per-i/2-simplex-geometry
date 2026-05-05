@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import NewType
 
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 from newclid.jgex.clause import JGEXClause, JGEXConstruction
 from newclid.jgex.constructions._index import JGEXConstructionName

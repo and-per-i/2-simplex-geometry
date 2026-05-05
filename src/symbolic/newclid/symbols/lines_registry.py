@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Iterator, Literal
 
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 from newclid.justifications._index import JustificationError, JustificationType
 from newclid.numerical.geometries import LineNum, line_num_from_points

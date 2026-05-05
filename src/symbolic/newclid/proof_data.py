@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Iterable, NewType, Self
 
-from pydantic import BaseModel, model_validator
+from newclid._base_model import NewclidModel as BaseModel
+from pydantic import model_validator
 
 from newclid.justifications._index import JustificationType
 from newclid.justifications.justification import Justification, justify_dependency

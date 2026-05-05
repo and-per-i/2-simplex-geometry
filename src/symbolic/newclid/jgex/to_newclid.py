@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from numpy.random import Generator as RngGenerator
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 from newclid.jgex.clause import JGEXClause, JGEXConstruction, is_numerical_argument
 from newclid.jgex.definition import (

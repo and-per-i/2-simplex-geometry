@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 
 import numpy
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 from newclid.heuristics.geometric_objects import (
     AngleHeuristic,

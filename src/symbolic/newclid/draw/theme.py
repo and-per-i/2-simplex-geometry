@@ -1,6 +1,6 @@
 from typing import TypeVar
 
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 
 PALETTE = [
     "#e6194b",

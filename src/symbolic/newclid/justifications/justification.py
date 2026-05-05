@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Annotated, Literal, cast
 
-from pydantic import BaseModel, Field
+from newclid._base_model import NewclidModel as BaseModel
+from pydantic import Field
 
 from newclid.deductors.deductor_interface import ARDeduction
 from newclid.justifications._index import JustificationType

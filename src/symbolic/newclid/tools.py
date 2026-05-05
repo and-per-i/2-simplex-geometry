@@ -7,7 +7,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generator, Optional, Sequence, TypeVar
 
-from pydantic import BaseModel
+from newclid._base_model import NewclidModel as BaseModel
 from pyvis.network import Network  # type: ignore
 
 from newclid.numerical import close_enough

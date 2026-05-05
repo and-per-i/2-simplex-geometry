@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Literal, NewType, Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, model_validator
+from newclid._base_model import NewclidModel as BaseModel
+from pydantic import ConfigDict, model_validator
 
 from newclid.justifications._index import JustificationType
 from newclid.predicates import Predicate
