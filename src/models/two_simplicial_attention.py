@@ -6,12 +6,8 @@ Implementa il triplo prodotto interno:
 
 Supporta:
   - Triton kernel (GPU) con fallback PyTorch automatico
-  - KV cache per inferenza autoregressiva efficiente:
-      cache = (K, Kp, V) shape (B, S_past, H, D)
+  - KV cache per inferenza autoregressiva efficiente
   - L2-norm eviction (Devoto et al. 2024) per selezione content-based
-    dei token da mantenere nella cache (sostituisce la selezione by-recency
-    del sliding window)
-  - L2 normalizzazione per-head di Q, K, Kp per stabilità numerica BF16
 """
 
 from typing import Optional, Tuple
@@ -60,7 +56,6 @@ class TwoSimplicialAttention(nn.Module):
         self.w1 = w1
         self.w2 = w2
 
-        # Proiezioni lineari (nomi allineati con i checkpoint Phase 1)
         self.W_Q       = nn.Linear(self.in_dim, self.out_dim, bias=False)
         self.W_K       = nn.Linear(self.in_dim, self.out_dim, bias=False)
         self.W_V       = nn.Linear(self.in_dim, self.out_dim, bias=False)
@@ -110,55 +105,40 @@ class TwoSimplicialAttention(nn.Module):
         # --- Aggiornamento cache ---
         if past_key_value is not None:
             K_past, Kp_past, V_past = past_key_value
-            K_full  = torch.cat([K_past,  K_new],  dim=1)  # (B, S_past+S, H, D)
+            K_full  = torch.cat([K_past,  K_new],  dim=1)
             Kp_full = torch.cat([Kp_past, Kp_new], dim=1)
             V_full  = torch.cat([V_past,  V_new],  dim=1)
         else:
             K_full, Kp_full, V_full = K_new, Kp_new, V_new
 
-        # --- L2 eviction (content-based): seleziona i token più importanti ---
+        is_generating = past_key_value is not None
+
+        # --- L2 eviction (content-based) ---
         if l2_eviction is not None and token_budget is not None:
             K_full, Kp_full, V_full = l2_eviction.evict(
                 K_full, Kp_full, V_full, token_budget
             )
 
-        # Cache da restituire (dopo eviction, prima della normalizzazione)
         present = (K_full, Kp_full, V_full)
 
-        # Q/K/Kp usati senza L2 normalization: le magnitudini fanno parte
-        # delle rappresentazioni apprese durante il pre-training e la fase 4.
-        # Normalizzarli distruggerebbe il triplo prodotto Q·K·Kp appreso.
-        Q  = Q_new
-        K  = K_full
-        Kp = Kp_full
-        Vp = V_full  # V' condiviso con V
+        # --- Core computation ---
+        # Niente L2 normalization: le magnitudini di Q/K/Kp fanno parte
+        # delle rappresentazioni apprese. Normalizzarle distruggerebbe
+        # il triplo prodotto Q·K·Kp per cui il modello è stato addestrato.
 
-        # --- Kernel Triton o fallback PyTorch ---
-        #
-        # Il kernel Triton implementa internamente la sliding window causale:
-        #   for kv1_idx in range(max(0, q_start - w1), min(seq_len, q_end)):
-        # Quindi va passato K_full (stessa seq_len di Q), non K_win.
-        # Passare K_win (solo w1 token) causerebbe accessi OOB quando
-        # seq_len > w1 perché il kernel itera fino a seq_len su K.
-        #
-        # Il fallback PyTorch invece riceve K_win perché fa il windowing
-        # esplicitamente in _forward_pytorch.
-        #
-        # Il kernel Triton è usato solo in training (no past_key_value) dove
-        # K_full.shape[1] == Q.shape[1] (stessa seq_len).  Per l'inferenza
-        # con KV cache si usa sempre il fallback PyTorch.
+        # Triton path: solo in training (no cache), su CUDA, con K_full == S
         use_triton = (
             self.use_triton_kernel
             and x.is_cuda
-            and past_key_value is None          # training only
-            and K_full.shape[1] == S            # K_full ha la stessa seq di Q
+            and not is_generating
+            and K_full.shape[1] == S
         )
 
         if use_triton:
             try:
                 from ..kernels.two_simplicial_autograd import TwoSimplicialAttentionFunction
                 Z = TwoSimplicialAttentionFunction.apply(
-                    x, Q, K, V_full, Kp, V_full,   # K, Kp, V già L2-normalizzati; V_full per valori
+                    x, Q_new, K_full, V_full, Kp_full, V_full,
                     self.out_dim, self.num_heads, self.head_dim,
                     self.w1, self.w2,
                 )
@@ -167,13 +147,12 @@ class TwoSimplicialAttention(nn.Module):
                 use_triton = False
 
         if not use_triton:
-            # Sliding window esplicita per il fallback PyTorch
-            K_win  = K[:, -self.w1:]
-            Kp_win = Kp[:, -self.w2:]
-            V_win  = V_full[:, -self.w1:]
-            Vp_win = V_full[:, -self.w2:]
-            Z = self._forward_pytorch(Q, K_win, V_win, Kp_win, Vp_win,
-                                      attention_mask=attention_mask)
+            if is_generating:
+                Z = self._inference_pytorch(Q_new, K_full, V_full, Kp_full,
+                                            attention_mask=attention_mask)
+            else:
+                Z = self._training_pytorch(Q_new, K_full, V_full, Kp_full,
+                                           attention_mask=attention_mask)
 
         # --- Output projection ---
         Z_concat = Z.reshape(x.shape[:-1] + (self.out_dim,)) if is_batched else Z.reshape(B * S, self.out_dim)
@@ -195,86 +174,119 @@ class TwoSimplicialAttention(nn.Module):
         return out, present
 
     # ------------------------------------------------------------------
-    # PyTorch fallback (CPU / debug)
+    # Training path: per-position causal sliding windows via unfold()
     # ------------------------------------------------------------------
 
-    def _forward_pytorch(
+    @staticmethod
+    def _get_causal_windows(tensor: torch.Tensor, window_size: int) -> torch.Tensor:
+        """Crea finestre causali per-posizione con padding di zeri a sinistra.
+
+        Per ogni posizione i, la finestra contiene le posizioni [i-w+1, i].
+        Le posizioni negative sono rimpiazzate da zeri.
+        """
+        B, S, H, D = tensor.shape
+        device = tensor.device
+        dtype = tensor.dtype
+        padded = torch.cat([
+            torch.zeros(B, window_size - 1, H, D, device=device, dtype=dtype),
+            tensor,
+        ], dim=1)
+        return padded.unfold(1, window_size, 1).permute(0, 1, 4, 2, 3)
+
+    def _training_pytorch(
         self,
         Q: torch.Tensor,
-        K_win: torch.Tensor,
-        V_win: torch.Tensor,
-        Kp_win: torch.Tensor,
-        Vp_win: torch.Tensor,
+        K: torch.Tensor,
+        V: torch.Tensor,
+        Kp: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        B, S, H, D = Q.shape
+        device = Q.device
+
+        K_win  = self._get_causal_windows(K,  self.w1)   # (B, S, w1, H, D)
+        Kp_win = self._get_causal_windows(Kp, self.w2)   # (B, S, w2, H, D)
+        V_win  = self._get_causal_windows(V,  self.w1)   # (B, S, w1, H, D)
+        Vp_win = self._get_causal_windows(V,  self.w2)   # (B, S, w2, H, D)
+
+        A = torch.einsum('bshd,bsjhd,bskhd->bshjk', Q, K_win, Kp_win) / (D ** 0.5)
+
+        # Maschera padding (zeri all'inizio per posizioni < w)
+        j_idx = torch.arange(self.w1, device=device).view(1, 1, self.w1)
+        s_idx = torch.arange(S, device=device).view(1, S, 1)
+        mask1 = j_idx >= (self.w1 - 1 - s_idx)
+
+        k_idx = torch.arange(self.w2, device=device).view(1, 1, self.w2)
+        mask2 = k_idx >= (self.w2 - 1 - s_idx)
+
+        mask = (mask1.unsqueeze(3) & mask2.unsqueeze(2)).unsqueeze(2)
+        A = A.masked_fill(~mask, float('-inf'))
+
+        if attention_mask is not None:
+            A = A.masked_fill(
+                attention_mask.view(B, S, 1, 1, 1) == 0, float('-inf')
+            )
+
+        S_attn = F.softmax(A.reshape(B, S, H, -1), dim=-1).reshape(B, S, H, self.w1, self.w2)
+        S_attn = self.dropout(S_attn)
+        Z = torch.einsum('bshjk,bsjhd,bskhd->bshd', S_attn, V_win, Vp_win)
+        return Z
+
+    # ------------------------------------------------------------------
+    # Inference path: fixed window over cached past + new tokens
+    # ------------------------------------------------------------------
+
+    def _inference_pytorch(
+        self,
+        Q: torch.Tensor,
+        K: torch.Tensor,
+        V: torch.Tensor,
+        Kp: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
-        Implementazione PyTorch vectorized con finestra causale.
-
-        Args:
-            Q:      (B, S_q, H, D) — query per i nuovi token
-            K_win:  (B, w1, H, D)  — chiavi primarie nella finestra
-            V_win:  (B, w1, H, D)  — value nella finestra
-            Kp_win: (B, w2, H, D)  — chiavi secondarie
-            Vp_win: (B, w2, H, D)  — value secondari (= V_win se V'=V)
-
-        Returns:
-            Z: (B, S_q, H, D)
+        Inference con KV cache. Q ha solo i nuovi token (S_q).
+        K/Kp/V contengono past + nuovi token. Si usa una finestra
+        fissa sugli ultimi w1/w2 token del contesto completo.
         """
         B, S_q, H, D = Q.shape
-        w1 = K_win.shape[1]
-        w2 = Kp_win.shape[1]
-        device = Q.device
+        S_full = K.shape[1]
 
-        # Score trilineare: A[b, s, h, j, k] = sum_d Q[b,s,h,d]*K[b,j,h,d]*Kp[b,k,h,d]
-        # Espandiamo le dimensioni per il broadcast:
-        # Q:      (B, S_q, H, D) → (B, S_q, H, 1,  1,  D)
-        # K_win:  (B, w1,  H, D) → (B, 1,   H, w1, 1,  D)
-        # Kp_win: (B, w2,  H, D) → (B, 1,   H, 1,  w2, D)
+        K_win  = K[:,  -self.w1:]   # (B, w1, H, D)
+        Kp_win = Kp[:, -self.w2:]   # (B, w2, H, D)
+        V_win  = V[:,  -self.w1:]
+        Vp_win = V[:,  -self.w2:]
+
         A = torch.einsum("bshd,bjhd,bkhd->bshjk", Q, K_win, Kp_win) / (D ** 0.5)
-        # A: (B, S_q, H, w1, w2)
 
-        # Maschera causale nella finestra.
-        #
-        # DERIVAZIONE: query al new-token index s_idx (0-based) ha posizione assoluta
-        # (S_q - w1_eff + s_idx + offset), ma la formula semplificata è:
-        #   maschera K_win[j] se j > s_idx + offset
-        # dove offset = w1_eff - S_q (numero di token "del passato" già nella finestra).
-        #
-        # Questo garantisce la CONSISTENCY causale: il risultato per query s_idx
-        # è lo stesso sia in prefill (S_q > 1) che in generation (S_q=1),
-        # indipendentemente da quanti altri token vengono processati assieme.
-        #
-        # Verifica:
-        #   - No past, S_q=8, w1_eff=8: offset=0 → mask j>s_idx (standard lower-tri causal) ✓
-        #   - Past=7, S_q=1, w1_eff=8:  offset=7 → mask j>7 (nulla mascherato, vede tutto il past) ✓
-        s_idx  = torch.arange(S_q, device=device).view(1, S_q, 1, 1)
-        j_idx  = torch.arange(w1,  device=device).view(1, 1,   w1, 1)
-        k_idx  = torch.arange(w2,  device=device).view(1, 1,   1,  w2)
-        offset_j = w1 - S_q   # w1_eff - S_q  (w1 == K_win.shape[1] qui)
-        offset_k = w2 - S_q
-        if S_q > 1:
-            mask_j = j_idx > (s_idx + offset_j)   # True → token futuro → maschera
+        # Maschera causale: i nuovi token vedono solo token ≤ sé stessi
+        if S_q == 1:
+            # Singolo token: vede tutta la finestra (tutto è passato)
+            pass
+        else:
+            # Prefill: maschera causale standard
+            device = Q.device
+            s_idx = torch.arange(S_q, device=device).view(1, S_q, 1, 1)
+            j_idx = torch.arange(self.w1, device=device).view(1, 1, self.w1, 1)
+            k_idx = torch.arange(self.w2, device=device).view(1, 1, 1, self.w2)
+            offset_j = self.w1 - S_q
+            offset_k = self.w2 - S_q
+            mask_j = j_idx > (s_idx + offset_j)
             mask_k = k_idx > (s_idx + offset_k)
-            mask = mask_j | mask_k                 # (1, S_q, w1, w2)
+            mask = mask_j | mask_k
             A = A.masked_fill(mask.unsqueeze(2), float("-inf"))
 
-        if attention_mask is not None and S_q > 1:
+        if attention_mask is not None:
             A = A.masked_fill(
                 attention_mask[:, :S_q, None, None, None] == 0, float("-inf")
             )
 
-        # Softmax congiunto su (j, k).
-        # Quando S_q > w1 le query iniziali non hanno chiavi causali nella finestra
-        # (tutte mascherate con -inf) → softmax produce NaN.
-        # Guardia: per righe interamente -inf produciamo attenzione zero (output = 0 + residual).
         A_flat = A.reshape(B, S_q, H, -1)
-        all_masked = (A_flat == float('-inf')).all(dim=-1, keepdim=True)  # (B, S_q, H, 1)
-        A_safe = A_flat.masked_fill(all_masked, 0.0)   # evita NaN nel softmax
+        all_masked = (A_flat == float('-inf')).all(dim=-1, keepdim=True)
+        A_safe = A_flat.masked_fill(all_masked, 0.0)
         S_attn = F.softmax(A_safe, dim=-1)
-        S_attn = S_attn.masked_fill(all_masked, 0.0)   # annulla righe che erano tutte mascherate
-        S_attn = S_attn.reshape(B, S_q, H, w1, w2)
+        S_attn = S_attn.masked_fill(all_masked, 0.0)
+        S_attn = S_attn.reshape(B, S_q, H, self.w1, self.w2)
         S_attn = self.dropout(S_attn)
-
-        # Aggregazione: Z[b,s,h,d] = Σ_{j,k} S[b,s,h,j,k] * V[b,j,h,d] * Vp[b,k,h,d]
         Z = torch.einsum("bshjk,bjhd,bkhd->bshd", S_attn, V_win, Vp_win)
         return Z
