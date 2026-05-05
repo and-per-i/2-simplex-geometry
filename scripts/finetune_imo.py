@@ -170,6 +170,25 @@ def main():
                 module.use_triton_kernel = False
         print("⚠️  Triton kernel disabilitato — usando fallback PyTorch")
 
+    # Correggi LayerNorm weights corrotte da training instabile
+    # (gamma > threshold indica esplosione dei gradienti nel checkpoint sorgente)
+    ln_threshold = 3.0
+    ln_fixed = []
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.LayerNorm):
+            if module.weight is not None and module.weight.abs().max().item() > ln_threshold:
+                bad_max = module.weight.abs().max().item()
+                torch.nn.init.ones_(module.weight)
+                if module.bias is not None:
+                    torch.nn.init.zeros_(module.bias)
+                ln_fixed.append((name, bad_max))
+    if ln_fixed:
+        print(f"🔧 Corrette {len(ln_fixed)} LayerNorm con gamma esplosi:")
+        for n, v in ln_fixed:
+            print(f"   {n}: max was {v:.1f} → reset a 1.0")
+    else:
+        print("✅ LayerNorm weights OK (nessun gamma > 3.0)")
+
     model.train()
 
     max_pos = model.config.max_position_embeddings
