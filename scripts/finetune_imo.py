@@ -189,18 +189,18 @@ def main():
     else:
         print("✅ LayerNorm weights OK (nessun gamma > 3.0)")
 
-    # Correggi token_embedding e lm_head con std anomala
+    # Reinizializza token_embedding e lm_head se corrotti
     # (std > 1.0 indica corruzione da gradienti esplosi accumulati)
-    embed_std_target = model.config.initializer_range
+    # Rescaling preserva le direzioni corrotte → serve reinit completo
+    embed_threshold = 1.0
+    std = model.config.initializer_range  # tipicamente 0.02
     for attr_name in ("token_embedding", "lm_head"):
         module = getattr(model, attr_name, None)
         if module is not None and hasattr(module, "weight") and module.weight is not None:
-            w = module.weight.data.float()
-            old_std = w.std().item()
-            if old_std > 1.0:
-                module.weight.data = (w * (embed_std_target / old_std)).to(module.weight.dtype)
-                new_std = module.weight.data.float().std().item()
-                print(f"🔧 {attr_name}.weight riscalato: std {old_std:.1f} → {new_std:.4f}  (÷{old_std/new_std:.0f}x)")
+            old_std = module.weight.data.float().std().item()
+            if old_std > embed_threshold:
+                torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+                print(f"🔧 {attr_name}.weight REINIZIALIZZATO: std {old_std:.1f} → {std}")
 
     model.train()
 
