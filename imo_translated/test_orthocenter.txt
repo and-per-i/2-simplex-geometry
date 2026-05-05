@@ -1,0 +1,1 @@
+a b c = triangle a b c; d = on_tline d a b c; e = on_tline e b a c; o = on_line o a d, on_line o b e ? on_tline o c a b

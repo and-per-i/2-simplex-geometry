@@ -1,0 +1,1 @@
+a b c = triangle a b c; m = midpoint m a b ? cong c m m a
