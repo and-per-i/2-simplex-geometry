@@ -16,3 +16,4 @@
 data/easy/very_easy_3000k.parquet filter=lfs diff=lfs merge=lfs -text
 data/curriculum/*.parquet filter=lfs diff=lfs merge=lfs -text
 data/*.parquet filter=lfs diff=lfs merge=lfs -text
+checkpoints/*.pt filter=lfs diff=lfs merge=lfs -text
