@@ -6,6 +6,8 @@ Questo config è compatibile con HuggingFace Trainer e permette di:
 - Specificare l'architettura in modo riproducibile
 """
 
+from typing import List
+
 from transformers import PretrainedConfig
 
 
@@ -22,7 +24,11 @@ class StudentConfig(PretrainedConfig):
         intermediate_size (int): Dimensione del feed-forward layer.
         max_position_embeddings (int): Lunghezza massima della sequenza.
         dropout_prob (float): Dropout applicato ad attention e FFN.
-        use_simplex_attention (bool): Se True, usa 2-Simplex attention.
+        use_simplex_attention (bool): Se True, usa 2-Simplex attention su tutti i layer
+                                      (ignorato se simplex_layers è non-vuoto).
+        simplex_layers (List[int]): Indici (0-based) dei layer che usano 2-Simplex attention.
+                                    Se non vuoto, ha precedenza su use_simplex_attention.
+                                    Es. [1, 5, 7] per il modello Phase 1 (8L finale).
         w1 (int): Dimensione della finestra scorrevole per K1/V1.
         w2 (int): Dimensione della finestra scorrevole per K2/V2.
         initializer_range (float): Std per l'inizializzazione dei pesi.
@@ -44,6 +50,7 @@ class StudentConfig(PretrainedConfig):
         max_position_embeddings: int = 1024,
         dropout_prob: float = 0.1,
         use_simplex_attention: bool = False,
+        simplex_layers: List[int] = [],
         use_triton: bool = True,
         w1: int = 8,
         w2: int = 8,
@@ -70,6 +77,7 @@ class StudentConfig(PretrainedConfig):
         self.max_position_embeddings = max_position_embeddings
         self.dropout_prob = dropout_prob
         self.use_simplex_attention = use_simplex_attention
+        self.simplex_layers = list(simplex_layers)
         self.use_triton = use_triton
         self.w1 = w1
         self.w2 = w2

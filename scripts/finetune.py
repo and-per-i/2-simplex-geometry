@@ -9,12 +9,15 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.models.student_model import StudentForCausalLM
 from src.models.student_config import StudentConfig
+from src.models.checkpoint_loader import load_from_phase1, load_checkpoint
 from src.data.finetune_dataset import FinetuneDataset
 from tokenizer.hf_tokenizer import load_tokenizer
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tuning Phase 3 for 2-simplex model")
-    parser.add_argument("--model_path", type=str, required=True, help="Path to the checkpoint from Phase 2")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Path to any .pt checkpoint (Phase 1 or Phase 2 format) — auto-detected")
+    parser.add_argument("--model_path", type=str, default=None, help="Path to a Phase 2 HF checkpoint directory (from_pretrained format)")
+    parser.add_argument("--phase1_checkpoint", type=str, default=None, help="Path to simplex-geometry_Final.pt produced by Phase 1 (Simplex Distillery)")
     parser.add_argument("--dataset_path", type=str, default="data/hard_dataset/olympiad_problems.txt", help="Path to the hard dataset")
     parser.add_argument("--output_dir", type=str, default="./alphageometry-edge-finetuned", help="Output directory")
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate (optimized for large batches)")
@@ -36,72 +39,31 @@ def main():
         tokenizer.pad_token_id = 0 # Default for AlphaGeometry
     print(f"📝 Tokenizer loaded (Vocab: {tokenizer.vocab_size})")
 
-    # 2. Load Model (Pre-trained from Phase 2)
-    print(f"📦 Loading pre-trained model from {args.model_path}...")
-    config = StudentConfig.from_pretrained(args.model_path)
-    
-    # Cloud GPU optimization: Enable Triton for 2-simplicial attention
-    config.use_simplex_attention = True
-    config.use_triton = True
-    
-    model = StudentForCausalLM.from_pretrained(
-        args.model_path,
-        config=config,
-        torch_dtype=torch.bfloat16,
-        ignore_mismatched_sizes=True # Allow loading even if architecture changed
-    ).to(device)
-
-    # --- Weight Mapping Logic (Transition from Standard to Simplicial) ---
-    # If the checkpoint was standard, we need to move weights to simplex_attn
-    if config.use_simplex_attention:
-        print("🔄 Mapping standard attention weights to simplicial attention...")
-        sf_path = os.path.join(args.model_path, "model.safetensors")
-        bin_path = os.path.join(args.model_path, "pytorch_model.bin")
-        
-        if os.path.exists(sf_path):
-            from safetensors.torch import load_file
-            state_dict = load_file(sf_path, device=device)
-        elif os.path.exists(bin_path):
-            state_dict = torch.load(bin_path, map_location=device)
-        else:
-            print("⚠️ Could not find weights file for mapping. Skipping...")
-            state_dict = {}
-
-        if state_dict:
-            current_state = model.state_dict()
-            for i in range(config.num_hidden_layers):
-                prefix = f"layers.{i}.attention"
-                
-                # Projections mapping (Old names -> New Names)
-                mapping = {
-                    "q_proj": "W_Q",
-                    "k_proj": "W_K",
-                    "v_proj": "W_V",
-                    "out_proj": "W_O"
-                }
-                
-                for old_p, new_p in mapping.items():
-                    old_key = f"model.{prefix}.{old_p}.weight" # Checkpoint had model.layers...
-                    new_key = f"{prefix}.{new_p}.weight"       # New is layers...
-                    
-                    if old_key in state_dict and new_key in current_state:
-                        current_state[new_key].copy_(state_dict[old_key])
-                        print(f"  Mapped {old_key} -> {new_key}")
-                    
-                    # Also try without 'model.' prefix in checkpoint
-                    elif old_key.replace("model.", "") in state_dict:
-                        current_state[new_key].copy_(state_dict[old_key.replace("model.", "")])
-                
-                # Initialize W_K_prime from K weights if not present
-                if f"W_K_prime.weight" in current_state and f"layers.{i}.attention.W_K_prime.weight" in current_state:
-                    # If checkpoint has kp_proj (rare), use it, otherwise use K
-                    if f"model.{prefix}.kp_proj.weight" in state_dict:
-                         current_state[f"{prefix}.W_K_prime.weight"].copy_(state_dict[f"model.{prefix}.kp_proj.weight"])
-                    elif f"model.{prefix}.k_proj.weight" in state_dict:
-                         current_state[f"{prefix}.W_K_prime.weight"].copy_(state_dict[f"model.{prefix}.k_proj.weight"])
-
-            model.load_state_dict(current_state)
-            print("✅ Weight mapping completed.")
+    # 2. Load Model
+    if args.checkpoint:
+        # Generic path: auto-detect Phase 1 vs Phase 2 format
+        print(f"📦 Loading checkpoint from {args.checkpoint}...")
+        model = load_checkpoint(args.checkpoint, device=device, strict=True)
+        model = model.to(torch.bfloat16)
+        config = model.config
+    elif args.phase1_checkpoint:
+        # Explicit Phase 1 path (legacy option, kept for back-compat)
+        print(f"📦 Loading Phase 1 checkpoint from {args.phase1_checkpoint}...")
+        model = load_from_phase1(args.phase1_checkpoint, device=device)
+        model = model.to(torch.bfloat16)
+        config = model.config
+    elif args.model_path:
+        # Phase 2 path: load a previously saved Phase 2 HF checkpoint directory
+        print(f"📦 Loading Phase 2 checkpoint from {args.model_path}...")
+        config = StudentConfig.from_pretrained(args.model_path)
+        model = StudentForCausalLM.from_pretrained(
+            args.model_path,
+            config=config,
+            torch_dtype=torch.bfloat16,
+            ignore_mismatched_sizes=True,
+        ).to(device)
+    else:
+        raise ValueError("Provide --checkpoint (any .pt), --phase1_checkpoint, or --model_path.")
     
     print(f"✅ Model loaded. Parameters: {sum(p.numel() for p in model.parameters()):,}")
 

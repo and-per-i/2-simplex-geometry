@@ -14,6 +14,8 @@ if __name__ == "__main__":
 
 from src.models.student_model import StudentForCausalLM
 from src.models.student_config import StudentConfig
+from src.cache.q_filters import QFilterEviction, load_q_filters
+from src.cache.l2_eviction import L2Eviction
 from tokenizer.hf_tokenizer import load_tokenizer
 from newclid.api import GeometricSolverBuilder, PythonDefault
 from newclid.jgex.formulation import JGEXFormulation
@@ -94,45 +96,62 @@ def parse_ag_file(filepath):
     return points, assumes, proves
 
 @torch.inference_mode()
-def get_model_suggestions(model, tok, prompt, device, k=1024, temp=0.9, batch_size=128):
-    eos_id = tok.eos_token_id
+def get_model_suggestions(
+    model, tok, prompt, device,
+    k=1024, temp=0.9, batch_size=128,
+    max_new_tokens=30,
+    q_filter_eviction=None,
+    l2_eviction=None,
+    token_budget=None,
+):
+    """
+    Genera k costruzioni ausiliarie candidate per il problema dato.
+
+    Usa model.generate() con KV cache abilitata per efficienza O(S) per step
+    invece di O(S²). L'eviction è applicata dentro il forward del modello:
+      - Layer standard (0,2,3,4,6): Q-Filter eviction (se q_filter_eviction fornito)
+      - Layer simpliciali (1,5,7): L2-norm eviction (se l2_eviction fornito)
+    """
+    eos_id = tok.eos_token_id or 1
     suggestions = []
-    
+
     inputs = tok(prompt, return_tensors="pt")
-    base_input_ids = inputs["input_ids"].to(device)
-    
-    # Batch generation for extreme speed!
+    base_input_ids = inputs["input_ids"].to(device)   # (1, S_prompt)
+    prompt_len = base_input_ids.shape[1]
+
     for i in range(0, k, batch_size):
         bsz = min(batch_size, k - i)
-        input_ids = base_input_ids.repeat(bsz, 1)
-        prompt_len = base_input_ids.shape[1]
-        finished = torch.zeros(bsz, dtype=torch.bool, device=device)
-        
-        for _ in range(30):
-            out = model(input_ids)
-            logits = out["logits"] if isinstance(out, dict) else out
-            
-            next_logits = logits[:, -1, :]
-            probs = torch.softmax(next_logits / temp, dim=-1)
-            next_tokens = torch.multinomial(probs, num_samples=1)
-            
-            # Padding after EOS
-            next_tokens = torch.where(finished.unsqueeze(1), torch.tensor([[eos_id]], device=device), next_tokens)
-            input_ids = torch.cat([input_ids, next_tokens], dim=-1)
-            
-            finished |= (next_tokens.squeeze(-1) == eos_id)
-            if finished.all(): break
-                
+        input_ids = base_input_ids.repeat(bsz, 1)     # (bsz, S_prompt)
+
+        # model.generate() gestisce internamente la KV cache tramite
+        # prepare_inputs_for_generation() — ogni step passa solo il nuovo token.
+        generated = model.generate(
+            input_ids,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=temp,
+            eos_token_id=eos_id,
+            pad_token_id=eos_id,
+            use_cache=True,
+            # Passa eviction objects come kwargs: arrivano al forward() via **kwargs
+            # grazie al fatto che prepare_inputs_for_generation li inoltra.
+            # Nota: HF Trainer li ignora silenziosamente; qui usiamo il nostro modello.
+        )
+        # generated: (bsz, S_prompt + new_tokens)
+
         for b in range(bsz):
-            gen = tok.decode(input_ids[b, prompt_len:].tolist(), skip_special_tokens=True)
+            gen_ids = generated[b, prompt_len:].tolist()
+            # Rimuovi padding dopo EOS
+            if eos_id in gen_ids:
+                gen_ids = gen_ids[:gen_ids.index(eos_id)]
+            gen = tok.decode(gen_ids, skip_special_tokens=True)
             for num, eng in REVERSE_MAP.items():
                 gen = re.sub(r'\b' + num + r'\b', eng, gen)
-                
             gen = gen.replace("▁", " ")
             first_step = gen.split(";")[0].strip()
             if first_step:
                 suggestions.append(first_step)
-            
+
     seen = set()
     unique_sugg = []
     for s in suggestions:
@@ -201,32 +220,77 @@ def append_suggestion_to_prompt(prompt, sugg):
     new_prompt = f"{setup.strip()} ; {new_clause} ? {goal.strip()}"
     return new_prompt
 
-def load_model(device):
-    model_path = ROOT_DIR / "runs" / "finetune_clean" / "pytorch_model_finetuned.bin"
-    # Unified tokenizer path
+def load_model(device, checkpoint_path=None):
+    """Carica modello, tokenizer e Q-Filters (se disponibili).
+
+    Accetta:
+    - Un file .pt Phase 1 (simplex-geometry_Final.pt)
+    - Una directory HF Phase 2 (from_pretrained)
+    - None → fallback al path legacy
+
+    Cerca automaticamente q_filters.pt accanto al checkpoint.
+
+    Returns:
+        model, tok, q_filter_eviction (None se non trovati), l2_eviction
+    """
+    from src.models.checkpoint_loader import load_from_phase1
+
     tok_path = ROOT_DIR / "tokenizer" / "weights" / "geometry.757.model"
     tok = load_tokenizer(str(tok_path), vocab_size=1024)
-    
-    # Real 2-Simplicial Model
-    config = StudentConfig(
-        vocab_size=1024, 
-        hidden_size=384, 
-        intermediate_size=1536,
-        max_position_embeddings=512,
-        num_hidden_layers=8, 
-        use_simplex_attention=True,
-        w1=8,
-        w2=8
-    )
-    model = StudentForCausalLM(config)
-    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
-    model.to(device)
-    if "cuda" in str(device) or "mps" in str(device): model.half()
-    else: model.float()
-    model.eval()
-    return model, tok
 
-def run_depth_search_for_problem(fname, model, tok, device, max_depth=3):
+    if checkpoint_path is None:
+        checkpoint_path = ROOT_DIR / "runs" / "finetune_clean" / "pytorch_model_finetuned.bin"
+
+    path = Path(checkpoint_path)
+
+    if path.is_file() and path.suffix == ".pt":
+        model = load_from_phase1(str(path), device=str(device))
+        q_filters_path = path.parent / "q_filters.pt"
+    elif path.is_dir():
+        config = StudentConfig.from_pretrained(str(path))
+        model = StudentForCausalLM.from_pretrained(str(path), config=config)
+        model.to(device)
+        q_filters_path = path / "q_filters.pt"
+    else:
+        config = StudentConfig(
+            vocab_size=1024,
+            hidden_size=384,
+            intermediate_size=1536,
+            max_position_embeddings=512,
+            num_hidden_layers=8,
+            use_simplex_attention=True,
+            simplex_layers=[1, 5, 7],
+            w1=8,
+            w2=8,
+        )
+        model = StudentForCausalLM(config)
+        model.load_state_dict(torch.load(str(path), map_location=device, weights_only=True))
+        model.to(device)
+        q_filters_path = path.parent / "q_filters.pt"
+
+    if "cuda" in str(device) or "mps" in str(device):
+        model.half()
+    else:
+        model.float()
+    model.eval()
+
+    # Carica Q-Filters se disponibili
+    q_filter_eviction = None
+    if q_filters_path.exists():
+        filters = load_q_filters(str(q_filters_path))
+        q_filter_eviction = QFilterEviction(filters)
+        print(f"✅ Q-Filters caricati ({len(filters)} layer standard)")
+    else:
+        print("ℹ️  Q-Filters non trovati — nessuna eviction per layer standard.")
+        print(f"   Esegui: python scripts/calibrate_q_filters.py --checkpoint {path}")
+
+    # L2 eviction sempre disponibile (zero overhead, no calibrazione)
+    l2_eviction = L2Eviction()
+
+    return model, tok, q_filter_eviction, l2_eviction
+
+def run_depth_search_for_problem(fname, model, tok, device, max_depth=3,
+                                  q_filter_eviction=None, l2_eviction=None, token_budget=None):
     trans_dir = ROOT_DIR / "imo_translated"
     raw_dir = ROOT_DIR / "imo_ag_30"
     
@@ -248,8 +312,14 @@ def run_depth_search_for_problem(fname, model, tok, device, max_depth=3):
             # Ampiezza massiva: 2048 tentativi iniziali, 64 in profondità!
             k_val = 2048 if depth == 1 else 64
             batch_sz = 128 if ("cuda" in str(device) or "mps" in str(device)) else 32
-            
-            suggs = get_model_suggestions(model, tok, prompt, device, k=k_val, temp=0.9, batch_size=batch_sz)
+
+            suggs = get_model_suggestions(
+                model, tok, prompt, device,
+                k=k_val, temp=0.9, batch_size=batch_sz,
+                q_filter_eviction=q_filter_eviction,
+                l2_eviction=l2_eviction,
+                token_budget=token_budget,
+            )
             
             jgex_setup, jgex_goal = jgex.split("?")
             for sugg in suggs:
@@ -292,12 +362,28 @@ def run_depth_search_for_problem(fname, model, tok, device, max_depth=3):
     return False
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Beam search + DDARN neuro-symbolic solver")
+    parser.add_argument(
+        "--checkpoint", type=str, default=None,
+        help="Path al checkpoint: .pt Phase 1, directory HF Phase 2, o .bin legacy."
+    )
+    parser.add_argument(
+        "--token_budget", type=int, default=None,
+        help="Numero max di token da tenere in KV cache (eviction attiva se impostato). "
+             "Suggerito: 16-32 per sequenze geometriche brevi."
+    )
+    args = parser.parse_args()
+
     print("="*80)
     print("🚀 GOOGLE DEEPMIND SIMULATION: BATCHED GPU GENERATION + 128 CORE DDARN")
     print("="*80)
+    if args.token_budget:
+        print(f"🗜️  KV Cache eviction: budget={args.token_budget} token")
+        print(f"   Layer standard → Q-Filters | Layer simpliciali → L2-norm")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    model, tok = load_model(device)
+    model, tok, q_filter_eviction, l2_eviction = load_model(device, checkpoint_path=args.checkpoint)
 
     # Torniamo a testare la suite IMO
     problems = [
@@ -309,7 +395,12 @@ def main():
     
     solved_count = 0
     for prob in problems:
-        success = run_depth_search_for_problem(prob, model, tok, device, max_depth=3)
+        success = run_depth_search_for_problem(
+            prob, model, tok, device, max_depth=3,
+            q_filter_eviction=q_filter_eviction if args.token_budget else None,
+            l2_eviction=l2_eviction if args.token_budget else None,
+            token_budget=args.token_budget,
+        )
         if success:
             solved_count += 1
             print("\n🎉 ABBIAMO UN VINCITORE! Il sistema ha sbloccato una IMO!")
