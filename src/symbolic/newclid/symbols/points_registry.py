@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Collection, Iterator, TypeAlias
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from newclid.numerical.geometries import PointNum
 from newclid.predicate_types import PredicateArgument
@@ -10,6 +10,8 @@ from newclid.predicate_types import PredicateArgument
 
 class Point(BaseModel):
     """The Point class is the symbolic representation of a geometric point."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     name: PredicateArgument
     num: PointNum
