@@ -132,27 +132,45 @@ class TwoSimplicialAttention(nn.Module):
         # V non normalizzato (è il valore, non la chiave)
         Vp = V_full  # V' condiviso con V
 
-        # --- Sliding window: prende gli ultimi w1/w2 token dalla cache ---
-        # Questo implementa la causalità: ogni query vede al massimo w token passati.
-        K_win  = K[:, -self.w1:]   # (B, min(S_full, w1), H, D)
-        Kp_win = Kp[:, -self.w2:]
-        V_win  = V_full[:, -self.w1:]
-        Vp_win = Vp[:, -self.w2:]
-
         # --- Kernel Triton o fallback PyTorch ---
-        if self.use_triton_kernel and x.is_cuda:
+        #
+        # Il kernel Triton implementa internamente la sliding window causale:
+        #   for kv1_idx in range(max(0, q_start - w1), min(seq_len, q_end)):
+        # Quindi va passato K_full (stessa seq_len di Q), non K_win.
+        # Passare K_win (solo w1 token) causerebbe accessi OOB quando
+        # seq_len > w1 perché il kernel itera fino a seq_len su K.
+        #
+        # Il fallback PyTorch invece riceve K_win perché fa il windowing
+        # esplicitamente in _forward_pytorch.
+        #
+        # Il kernel Triton è usato solo in training (no past_key_value) dove
+        # K_full.shape[1] == Q.shape[1] (stessa seq_len).  Per l'inferenza
+        # con KV cache si usa sempre il fallback PyTorch.
+        use_triton = (
+            self.use_triton_kernel
+            and x.is_cuda
+            and past_key_value is None          # training only
+            and K_full.shape[1] == S            # K_full ha la stessa seq di Q
+        )
+
+        if use_triton:
             try:
                 from ..kernels.two_simplicial_autograd import TwoSimplicialAttentionFunction
                 Z = TwoSimplicialAttentionFunction.apply(
-                    x, Q, K_win, V_win, Kp_win, Vp_win,
+                    x, Q, K, V_full, Kp, V_full,   # K, Kp, V già L2-normalizzati; V_full per valori
                     self.out_dim, self.num_heads, self.head_dim,
                     self.w1, self.w2,
                 )
             except Exception as e:
                 print(f"⚠️ [TwoSimplicialAttention] Triton kernel failed, fallback PyTorch: {e}")
-                Z = self._forward_pytorch(Q, K_win, V_win, Kp_win, Vp_win,
-                                          attention_mask=attention_mask)
-        else:
+                use_triton = False
+
+        if not use_triton:
+            # Sliding window esplicita per il fallback PyTorch
+            K_win  = K[:, -self.w1:]
+            Kp_win = Kp[:, -self.w2:]
+            V_win  = V_full[:, -self.w1:]
+            Vp_win = V_full[:, -self.w2:]
             Z = self._forward_pytorch(Q, K_win, V_win, Kp_win, Vp_win,
                                       attention_mask=attention_mask)
 
