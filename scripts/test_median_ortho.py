@@ -171,9 +171,11 @@ def test_problem(problem, model, tok, device, k=512, max_depth=2):
         print(f"Fase 2 depth={depth} — Generazione {k if depth == 1 else 64} suggerimenti...")
         k_this = k if depth == 1 else 64
         candidates = []
+        all_suggs = []
 
         for cur_jgex, cur_prompt in current_nodes:
             suggs = get_suggestions(model, tok, cur_prompt, device, k=k_this)
+            all_suggs.extend([(s, cur_prompt) for s in suggs])
             setup_part, goal_part = cur_jgex.split("?")
             for sugg in suggs:
                 nc = translate_to_newclid(sugg, cur_prompt)
@@ -183,7 +185,10 @@ def test_problem(problem, model, tok, device, k=512, max_depth=2):
                     candidates.append((aug, new_prompt, sugg))
 
         if not candidates:
-            print(f"  Nessuna costruzione valida generata a depth {depth}.")
+            print(f"  Nessuna costruzione valida — campione output modello (primi 15):")
+            for sugg, cprompt in all_suggs[:15]:
+                nc = translate_to_newclid(sugg, cprompt)
+                print(f"    {sugg!r}  →  {'OK: ' + nc if nc else 'SCARTATO'}")
             continue
 
         print(f"  {len(candidates)} rami da testare con Newclid...")
