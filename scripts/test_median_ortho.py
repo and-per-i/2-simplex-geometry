@@ -1,14 +1,10 @@
 """
 test_median_ortho.py — Test del sistema neuro-simbolico su due problemi canonici.
 
-Problema 1 (Mediana):
-    In un triangolo ABC con M = punto medio di AB, dimostra CM = MA.
-    (Richiede al modello di suggerire che C giaccia sulla circonferenza con diametro AB.)
-
-Problema 2 (Ortocentro):
-    Dato il triangolo ABC con le altezze da A e da B che si intersecano in O,
-    dimostra che O giace anche sull'altezza da C.
-    (Richiede la costruzione ausiliaria che chiude la concorrenza delle altezze.)
+Il modello è stato addestrato sul formato:
+  <problem> pt : pred args [step] ; ... ? goal </problem>
+e risponde con:
+  <aux> x00 new_pt : pred args [step] ; </aux> <proof> ... </proof>
 
 Uso:
     python scripts/test_median_ortho.py --checkpoint runs/imo_unified/final_imo_model
@@ -30,28 +26,37 @@ from newclid.api import GeometricSolverBuilder, PythonDefault
 from newclid.jgex.formulation import JGEXFormulation
 from newclid.jgex.problem_builder import JGEXProblemBuilder
 
+# Formato dei problemi:
+#   jgex   → stringa JGEX per Newclid (verifica simbolica)
+#   prompt → stringa <problem>...</problem> che il modello ha visto in training
 PROBLEMS = [
     {
-        "name": "Mediana (teorema del triangolo rettangolo)",
-        "jgex": "a b c = triangle a b c; m = midpoint m a b ? cong c m m a",
-        "prompt": "a : ; b : ; c : ; m : 04 a b ? 01 c m m a",
+        "name": "Mediana (punto medio)",
+        "jgex":   "a b c = triangle a b c; m = midpoint m a b ? cong c m m a",
+        "prompt": "<problem> a : ; b : ; c : ; m : midp m a b [000] ? cong c m m a </problem>",
+        "next_step": 1,
         "difficulty": "base",
     },
     {
-        "name": "Ortocentro (concorrenza delle altezze)",
-        "jgex": "a b c = triangle a b c; d = on_tline d a b c; e = on_tline e b a c; o = on_line o a d, on_line o b e ? on_tline o c a b",
-        "prompt": "a : ; b : ; c : ; d : 02 d a b c ; e : 02 e b a c ; o : 00 o a d 00 o b e ? 02 o c a b",
+        "name": "Ortocentro (concorrenza altezze)",
+        "jgex":   "a b c = triangle a b c; d = on_tline d a b c; e = on_tline e b a c; o = on_line o a d, on_line o b e ? on_tline o c a b",
+        "prompt": "<problem> a : ; b : ; c : ; d : perp a d b c [000] coll d b c [001] ; e : perp b e a c [002] coll e a c [003] ; o : coll o a d [004] coll o b e [005] ? perp c o a b </problem>",
+        "next_step": 6,
         "difficulty": "medio",
     },
 ]
 
-PREDICATE_MAP = {
-    'coll': '00', 'cong': '01', 'perp': '02', 'para': '03',
-    'midpoint': '04', 'eqangle': '05', 'eqratio': '06', 'sameclock': '07',
-    'sameside': '08', 'simtri': '09', 'contri': '10', 'cyclic': '11', 'circle': '12',
-    'midp': '04',
+# Mapping predicate → JGEX construction (per tradurre l'output del modello)
+AUX_TO_JGEX = {
+    "midp":      "midpoint",
+    "midpoint":  "midpoint",
+    "coll":      "on_line",
+    "perp":      "on_tline",
+    "para":      "on_pline",
+    "cong":      "eqdistance",
+    "circle":    "on_circum",
+    "cyclic":    "on_circum",
 }
-REVERSE_MAP = {v: k for k, v in PREDICATE_MAP.items()}
 
 
 def solve_worker(task):
@@ -77,11 +82,11 @@ def solve_worker(task):
 
 
 @torch.inference_mode()
-def get_suggestions(model, tok, prompt, device, k=512, temp=0.9, batch_size=64):
-    raw_ids = tok.encode(prompt, add_special_tokens=False)
-    input_ids = torch.tensor([raw_ids], device=device).repeat(min(k, batch_size), 1)
+def get_suggestions(model, tok, prompt, device, k=256, temp=0.9, batch_size=64):
+    """Genera k output dal modello, restituisce (raw_text, aux_construction)."""
+    raw_ids = tok.encode(prompt, add_special_tokens=True)
     eos_id = tok.eos_token_id
-    suggestions = []
+    results = []
 
     num_batches = (k + batch_size - 1) // batch_size
     for b in range(num_batches):
@@ -89,7 +94,7 @@ def get_suggestions(model, tok, prompt, device, k=512, temp=0.9, batch_size=64):
         ids = torch.tensor([raw_ids], device=device).repeat(bs, 1)
         finished = torch.zeros(bs, dtype=torch.bool, device=device)
 
-        for _ in range(32):
+        for _ in range(64):
             out = model(ids)
             logits = out.logits if hasattr(out, "logits") else out
             next_logits = logits[:, -1, :]
@@ -101,114 +106,161 @@ def get_suggestions(model, tok, prompt, device, k=512, temp=0.9, batch_size=64):
                 break
 
         for i in range(bs):
-            decoded = tok.decode(ids[i].tolist(), skip_special_tokens=True)
-            gen = decoded[len(prompt):].strip()
-            for num, eng in REVERSE_MAP.items():
-                gen = re.sub(r'\b' + num + r'\b', eng, gen)
-            first = gen.split(";")[0].strip()
-            if first:
-                suggestions.append(first)
+            gen = tok.decode(ids[i].tolist(), skip_special_tokens=False)
+            # Estrai solo la parte generata dopo il prompt
+            if "</problem>" in gen:
+                after = gen.split("</problem>", 1)[1].strip()
+            else:
+                after = gen[len(tok.decode(raw_ids, skip_special_tokens=False)):].strip()
+            results.append(after)
 
-    return list(set(suggestions))
+    return results
 
 
-def translate_to_newclid(suggestion, prompt):
-    parts = [p for p in suggestion.split()
-             if not re.match(r'^[ra]\d+$', p) and p != 'x00' and not p.isdigit()]
-    if len(parts) < 3:
+def parse_aux(raw_output):
+    """
+    Estrae le costruzioni ausiliarie dall'output del modello.
+    Formato atteso: <aux> x00 pt_name : pred args [N] ; ... </aux>
+    Restituisce lista di (point_name, predicate, args).
+    """
+    aux_match = re.search(r"<aux>(.*?)</aux>", raw_output, re.DOTALL)
+    if not aux_match:
+        return []
+
+    content = aux_match.group(1).strip()
+    # Rimuovi "x00" iniziale
+    content = re.sub(r"^\s*x\d+\s*", "", content)
+
+    constructions = []
+    # Ogni costruzione: "pt_name : pred arg1 arg2 ... [N] ;"
+    for clause in content.split(";"):
+        clause = clause.strip()
+        if not clause:
+            continue
+        # "pt_name : pred args [N]"
+        m = re.match(r"([a-z]\w*)\s*:\s*(.+?)(?:\s*\[\d+\])?$", clause, re.IGNORECASE)
+        if m:
+            pt_name = m.group(1)
+            rest = re.sub(r"\[\d+\]", "", m.group(2)).strip()
+            parts = rest.split()
+            if parts:
+                pred = parts[0]
+                args = parts[1:]
+                constructions.append((pt_name, pred, args))
+
+    return constructions
+
+
+def aux_to_newclid(pt_name, pred, args):
+    """Traduce (pt_name, pred, args) in una clausola JGEX aggiuntiva."""
+    if pred not in AUX_TO_JGEX:
         return ""
-    pred, target = parts[0], parts[1]
-    args = [p for p in parts[1:] if len(p) <= 2]
+    jgex_pred = AUX_TO_JGEX[pred]
 
-    mapping = {
-        "midpoint": "midpoint", "midp": "midpoint",
-        "coll": "on_line",
-        "perp": "on_tline",
-        "para": "on_pline",
-        "cong": "eqdistance",
-        "circle": "on_circum",
-        "cyclic": "on_circum",
-    }
-    if pred not in mapping:
-        return ""
+    # Filtra solo lettere valide come nomi di punto
+    clean_args = [a for a in args if re.match(r'^[a-z]$', a, re.IGNORECASE)]
 
-    n_pred = mapping[pred]
-    if n_pred == "midpoint":       final_args = args[:3]
-    elif n_pred == "on_line":      final_args = args[:3]
-    elif n_pred in ("on_tline", "on_pline", "eqdistance"): final_args = args[:4]
-    elif n_pred == "on_circum":    final_args = args[:4]
-    else:
-        return ""
-
-    if len(final_args) < 3:
-        return ""
-    return f"; {target} = {n_pred} {' '.join(final_args)}"
+    if jgex_pred == "midpoint":
+        if len(clean_args) >= 2:
+            return f"; {pt_name} = midpoint {pt_name} {clean_args[0]} {clean_args[1]}"
+    elif jgex_pred == "on_line":
+        if len(clean_args) >= 2:
+            return f"; {pt_name} = on_line {pt_name} {clean_args[0]} {clean_args[1]}"
+    elif jgex_pred in ("on_tline", "on_pline"):
+        if len(clean_args) >= 3:
+            return f"; {pt_name} = {jgex_pred} {pt_name} {clean_args[0]} {clean_args[1]} {clean_args[2]}"
+    elif jgex_pred == "eqdistance":
+        if len(clean_args) >= 3:
+            return f"; {pt_name} = eqdistance {pt_name} {clean_args[0]} {clean_args[1]} {clean_args[2]}"
+    elif jgex_pred == "on_circum":
+        if len(clean_args) >= 3:
+            return f"; {pt_name} = on_circum {pt_name} {clean_args[0]} {clean_args[1]} {clean_args[2]}"
+    return ""
 
 
-def test_problem(problem, model, tok, device, k=512, max_depth=2):
+def test_problem(problem, model, tok, device, k=256, max_depth=2, verbose=True):
     name = problem["name"]
     jgex = problem["jgex"]
     prompt = problem["prompt"]
 
     print(f"\n{'='*70}")
     print(f"Problema: {name}  [{problem['difficulty']}]")
-    print(f"JGEX: {jgex}")
+    print(f"JGEX:   {jgex}")
+    print(f"Prompt: {prompt}")
     print(f"{'='*70}")
 
-    # Fase 1: Newclid puro (senza AI)
+    # Fase 1: Newclid puro
     print("Fase 1 — Newclid puro: ", end="", flush=True)
     ok, _, _ = solve_worker((jgex, 15, 0))
     if ok:
-        print("RISOLTO (senza AI)")
+        print("RISOLTO senza AI")
         return "pure"
     print("fallito")
 
-    # Fase 2: modello + Newclid (beam search)
+    # Fase 2: modello + Newclid
     jgex_setup, jgex_goal = jgex.split("?")
     current_nodes = [(jgex, prompt)]
 
     for depth in range(1, max_depth + 1):
-        print(f"Fase 2 depth={depth} — Generazione {k if depth == 1 else 64} suggerimenti...")
-        k_this = k if depth == 1 else 64
+        k_this = k if depth == 1 else 32
+        print(f"\nFase 2 depth={depth} — Generazione {k_this} suggerimenti...")
         candidates = []
-        all_suggs = []
+        shown = 0
 
         for cur_jgex, cur_prompt in current_nodes:
-            suggs = get_suggestions(model, tok, cur_prompt, device, k=k_this)
-            all_suggs.extend([(s, cur_prompt) for s in suggs])
-            setup_part, goal_part = cur_jgex.split("?")
-            for sugg in suggs:
-                nc = translate_to_newclid(sugg, cur_prompt)
-                if nc:
-                    aug = f"{setup_part.strip()} {nc} ? {goal_part.strip()}"
-                    new_prompt = cur_prompt.rstrip() + f" {sugg} ;"
-                    candidates.append((aug, new_prompt, sugg))
+            outputs = get_suggestions(model, tok, cur_prompt, device, k=k_this)
+
+            for raw in outputs:
+                # Mostra i primi output al primo depth
+                if verbose and depth == 1 and shown < 8:
+                    print(f"  [Output modello]: {raw[:120]!r}")
+                    shown += 1
+
+                constructions = parse_aux(raw)
+                for pt_name, pred, args in constructions:
+                    jgex_clause = aux_to_newclid(pt_name, pred, args)
+                    if jgex_clause:
+                        aug = f"{jgex_setup.strip()} {jgex_clause} ? {jgex_goal.strip()}"
+                        new_prompt = cur_prompt.replace(
+                            "</problem>",
+                            f"<aux> x00 {pt_name} : {pred} {' '.join(args)} ; </aux></problem>"
+                        )
+                        candidates.append((aug, new_prompt, f"{pt_name}:{pred} {' '.join(args)}"))
 
         if not candidates:
-            print(f"  Nessuna costruzione valida — campione output modello (primi 15):")
-            for sugg, cprompt in all_suggs[:15]:
-                nc = translate_to_newclid(sugg, cprompt)
-                print(f"    {sugg!r}  →  {'OK: ' + nc if nc else 'SCARTATO'}")
+            print("  Nessuna costruzione JGEX valida estratta dagli output.")
             continue
 
-        print(f"  {len(candidates)} rami da testare con Newclid...")
+        # Deduplica
+        seen = set()
+        unique = []
+        for c in candidates:
+            if c[2] not in seen:
+                seen.add(c[2])
+                unique.append(c)
+        candidates = unique
+
+        print(f"  {len(candidates)} costruzioni uniche → test con Newclid...")
+        for pt_name_pred, _, _ in candidates[:10]:
+            print(f"    {pt_name_pred}")
+
         tasks = [(c[0], 15, i) for i, c in enumerate(candidates)]
         with mp.Pool(max(1, mp.cpu_count())) as pool:
             try:
                 from tqdm import tqdm
                 it = tqdm(pool.imap_unordered(solve_worker, tasks),
-                          total=len(tasks), desc=f"D{depth}")
+                          total=len(tasks), desc=f"Newclid D{depth}")
             except ImportError:
                 it = pool.imap_unordered(solve_worker, tasks)
             for success, tid, _ in it:
                 if success:
-                    print(f"\n  DIMOSTRATO a depth {depth}!")
+                    print(f"\n  ✅ DIMOSTRATO a depth {depth}!")
                     print(f"  Costruzione: {candidates[tid][2]}")
                     pool.terminate()
                     return "ai"
 
-        print(f"  Nessun successo a depth {depth}.")
-        current_nodes = [(c[0], c[1]) for c in candidates[:64]]
+        print(f"  ❌ Nessun successo a depth {depth}.")
+        current_nodes = [(c[0], c[1]) for c in candidates[:32]]
 
     return "fail"
 
@@ -216,12 +268,9 @@ def test_problem(problem, model, tok, device, k=512, max_depth=2):
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True,
-                        help="Checkpoint fine-tunato (directory HF o .pt)")
-    parser.add_argument("--k", type=int, default=512,
-                        help="Suggerimenti al primo livello (default 512)")
-    parser.add_argument("--depth", type=int, default=2,
-                        help="Profondità beam search (default 2)")
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--k", type=int, default=256)
+    parser.add_argument("--depth", type=int, default=2)
     args = parser.parse_args()
 
     device = (
@@ -240,15 +289,16 @@ def main():
 
     results = {}
     for prob in PROBLEMS:
-        results[prob["name"]] = test_problem(prob, model, tok, device,
-                                              k=args.k, max_depth=args.depth)
+        results[prob["name"]] = test_problem(
+            prob, model, tok, device, k=args.k, max_depth=args.depth
+        )
 
     print(f"\n{'='*70}")
     print("RIEPILOGO")
     print(f"{'='*70}")
     for name, res in results.items():
-        emoji = "pure" if res == "pure" else ("AI" if res == "ai" else "FAIL")
-        print(f"  {name}: {emoji}")
+        label = "Newclid puro" if res == "pure" else ("AI+Newclid ✅" if res == "ai" else "FAIL ❌")
+        print(f"  {name}: {label}")
 
 
 if __name__ == "__main__":
