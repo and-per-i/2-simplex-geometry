@@ -35,12 +35,14 @@ Uso
       --max_samples_per_stage 100
 """
 
+import math
 import os
 import sys
 import argparse
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from transformers import Trainer, TrainingArguments, TrainerCallback, TrainerState, TrainerControl
 
 ROOT_DIR = Path(__file__).parent.parent.resolve()
@@ -122,7 +124,8 @@ def parse_args():
         "--save_steps", type=int, default=500,
     )
     parser.add_argument(
-        "--logging_steps", type=int, default=50,
+        "--logging_steps", type=int, default=10,
+        help="Ogni quanti step loggare la loss (default=10, usa 1 per debug dettagliato)"
     )
     parser.add_argument(
         "--seed", type=int, default=42,
@@ -231,6 +234,32 @@ def main():
             else _collate_fn,
         callbacks=[callback],
     )
+
+    # ------------------------------------------------------------------
+    # Sanity check: verifica loss iniziale prima di qualsiasi aggiornamento
+    # ------------------------------------------------------------------
+    print("\n🔍 Sanity check iniziale...")
+    model.eval()
+    with torch.no_grad():
+        sample = dataset[0]
+        ids = sample["input_ids"][:64].unsqueeze(0).to(device)
+        if bf16:
+            ids = ids  # input_ids rimangono long
+        out = model(ids, labels=ids)
+        logits = out.logits  # (1, 64, vocab_size)
+        initial_loss_check = F.cross_entropy(
+            logits[..., :-1, :].contiguous().view(-1, model.config.vocab_size),
+            ids[..., 1:].contiguous().view(-1),
+            ignore_index=-100,
+        )
+        expected = math.log(model.config.vocab_size)
+        print(f"   Loss su 1 campione (64 token): {initial_loss_check.item():.4f}")
+        print(f"   Atteso (modello casuale): ~{expected:.2f}")
+        print(f"   Logits — min: {logits.min().item():.3f}  max: {logits.max().item():.3f}  "
+              f"mean: {logits.mean().item():.3f}  std: {logits.std().item():.3f}")
+        ok = initial_loss_check.item() < 100
+        print(f"   {'✅ Pesi OK' if ok else '❌ PROBLEMA: loss >> atteso, controllare checkpoint / dataset'}")
+    model.train()
 
     print(f"\n🔥 Avvio training IMO curriculum ({args.total_epochs} epoch)...")
     trainer.train()
