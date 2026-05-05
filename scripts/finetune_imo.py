@@ -70,6 +70,8 @@ class CurriculumSchedulerCallback(TrainerCallback):
     ):
         epoch = int(state.epoch) if state.epoch is not None else 0
         self.dataset.set_epoch(epoch)
+        if args.local_rank <= 0:
+            print(f"📅 Epoch {epoch}: dataset rebuilt, {len(self.dataset):,} campioni, max_len={self.dataset.max_length}")
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +127,11 @@ def parse_args():
     parser.add_argument(
         "--seed", type=int, default=42,
     )
+    parser.add_argument(
+        "--no_triton", action="store_true",
+        help="Disabilita il kernel Triton per i layer simpliciali (usa fallback PyTorch). "
+             "Utile per debugging o se il kernel non è ancora stabile."
+    )
     return parser.parse_args()
 
 
@@ -140,7 +147,7 @@ def main():
         else "mps" if torch.backends.mps.is_available()
         else "cpu"
     )
-    bf16 = device in ("cuda", "mps")
+    bf16 = device == "cuda"   # MPS bf16 support is incomplete in many PyTorch versions
     print(f"🚀 Device: {device}  BF16: {bf16}")
 
     # Tokenizer
@@ -154,6 +161,12 @@ def main():
     model = load_checkpoint(ckpt_path, device=device)
     if bf16:
         model = model.to(torch.bfloat16)
+    if args.no_triton:
+        for module in model.modules():
+            if hasattr(module, "use_triton_kernel"):
+                module.use_triton_kernel = False
+        print("⚠️  Triton kernel disabilitato — usando fallback PyTorch")
+
     model.train()
 
     max_pos = model.config.max_position_embeddings
