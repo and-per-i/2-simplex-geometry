@@ -125,11 +125,12 @@ class TwoSimplicialAttention(nn.Module):
         # Cache da restituire (dopo eviction, prima della normalizzazione)
         present = (K_full, Kp_full, V_full)
 
-        # --- L2 normalizzazione per-head (stabilità BF16) ---
-        Q  = Q_new / (Q_new.norm(dim=-1, keepdim=True) + 1e-7)
-        K  = K_full  / (K_full.norm(dim=-1, keepdim=True)  + 1e-7)
-        Kp = Kp_full / (Kp_full.norm(dim=-1, keepdim=True) + 1e-7)
-        # V non normalizzato (è il valore, non la chiave)
+        # Q/K/Kp usati senza L2 normalization: le magnitudini fanno parte
+        # delle rappresentazioni apprese durante il pre-training e la fase 4.
+        # Normalizzarli distruggerebbe il triplo prodotto Q·K·Kp appreso.
+        Q  = Q_new
+        K  = K_full
+        Kp = Kp_full
         Vp = V_full  # V' condiviso con V
 
         # --- Kernel Triton o fallback PyTorch ---
