@@ -140,7 +140,7 @@ def load_from_phase1(
 
     # Filter out is_bypassed buffers (all-False tensors added by progressive
     # pruning; they carry no learned info and are safe to ignore).
-    real_missing = [k for k in missing if "is_bypassed" not in k]
+    real_missing = [k for k in missing if "is_bypassed" not in k and not k.endswith(".alpha")]
     real_unexpected = [k for k in unexpected if "is_bypassed" not in k]
 
     if real_missing:
@@ -274,7 +274,7 @@ def load_checkpoint(
     model = StudentForCausalLM(config)
     missing, unexpected = model.load_state_dict(sd, strict=False)
 
-    real_missing = [k for k in missing if "is_bypassed" not in k]
+    real_missing = [k for k in missing if "is_bypassed" not in k and not k.endswith(".alpha")]
     real_unexpected = [k for k in unexpected if "is_bypassed" not in k]
 
     if real_missing:

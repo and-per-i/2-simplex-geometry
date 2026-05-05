@@ -189,6 +189,19 @@ def main():
     else:
         print("✅ LayerNorm weights OK (nessun gamma > 3.0)")
 
+    # Correggi token_embedding e lm_head con std anomala
+    # (std > 1.0 indica corruzione da gradienti esplosi accumulati)
+    embed_std_target = model.config.initializer_range
+    for attr_name in ("token_embedding", "lm_head"):
+        module = getattr(model, attr_name, None)
+        if module is not None and hasattr(module, "weight") and module.weight is not None:
+            w = module.weight.data.float()
+            old_std = w.std().item()
+            if old_std > 1.0:
+                module.weight.data = (w * (embed_std_target / old_std)).to(module.weight.dtype)
+                new_std = module.weight.data.float().std().item()
+                print(f"🔧 {attr_name}.weight riscalato: std {old_std:.1f} → {new_std:.4f}  (÷{old_std/new_std:.0f}x)")
+
     model.train()
 
     max_pos = model.config.max_position_embeddings
